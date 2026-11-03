@@ -1,0 +1,36 @@
+[project]
+name = "aseprite-ai-inpaint"
+version = "0.1.0"
+description = "Bridge between an Aseprite extension and a local ComfyUI to inpaint pixel art selections"
+authors = [{ name = "Maxence Augier", email = "sarcouy@protonmail.com" }]
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+dependencies = ["pillow (>=13.0.0,<14.0.0)", "requests (>=2.34.2,<3.0.0)"]
+
+[project.scripts]
+ai-inpaint-bridge = "ai_inpaint_bridge.cli:main"
+
+[tool.poetry]
+packages = [{ include = "ai_inpaint_bridge", from = "src" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+
+[tool.pylint.main]
+ignore = [".venv"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.2.0,<10.0.0)",
+    "pylint (>=4.1.3,<5.0.0)",
+    "black (>=26.10.1,<27.0.0)",
+    "mypy (>=2.4.1,<3.0.0)",
+    "types-requests (>=2.33.0.20261030,<3.0.0.0)"
+]

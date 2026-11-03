@@ -1,0 +1,17 @@
+{
+  "name": "aseprite-ai-inpaint",
+  "displayName": "AI Inpaint",
+  "description": "Rewrite the selected area of a sprite with a local diffusion model",
+  "version": "0.1.0",
+  "author": {
+    "name": "Maxence Augier"
+  },
+  "categories": ["Scripts"],
+  "contributes": {
+    "scripts": [
+      {
+        "path": "./plugin.lua"
+      }
+    ]
+  }
+}
