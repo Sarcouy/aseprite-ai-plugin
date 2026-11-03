@@ -32,6 +32,15 @@ def test_every_link_points_to_an_existing_node() -> None:
                 assert value[0] in workflow
 
 
+def test_background_hint_is_appended_for_transparent_areas() -> None:
+    """The key color name is added so the model keeps a plain background."""
+    settings = InpaintSettings("a chest", 0, background="magenta")
+
+    workflow = build_inpaint_workflow("in.png", "mask.png", settings)
+
+    assert workflow["3"]["inputs"]["text"].endswith("a chest, plain magenta background")
+
+
 def test_empty_prompt_keeps_only_the_trigger() -> None:
     """The LoRA trigger alone is sent when the user gives no prompt."""
     workflow = build_inpaint_workflow("in.png", "mask.png", InpaintSettings("", 0))

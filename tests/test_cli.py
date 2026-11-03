@@ -4,10 +4,22 @@ from pathlib import Path
 
 from PIL import Image
 
-from ai_inpaint_bridge.cli import main
+from ai_inpaint_bridge.cli import load_palette, main
 
 RED = (200, 10, 30, 255)
 INVERTED_RED = (55, 245, 225, 255)
+
+
+def test_single_color_palette_is_ignored(tmp_path: Path) -> None:
+    """An all-black palette falls back to the adaptive palette."""
+    Image.new("RGBA", (256, 1), (0, 0, 0, 255)).save(tmp_path / "black.png")
+    strip = Image.new("RGBA", (2, 1), RED)
+    strip.putpixel((1, 0), INVERTED_RED)
+    strip.save(tmp_path / "two.png")
+
+    assert load_palette(tmp_path / "black.png") is None
+    assert load_palette(tmp_path / "two.png") == [RED[:3], INVERTED_RED[:3]]
+    assert load_palette(None) is None
 
 
 def write_inputs(tmp_path: Path, mask_size: tuple[int, int] = (4, 4)) -> list[str]:

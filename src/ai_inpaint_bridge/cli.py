@@ -17,6 +17,7 @@ from ai_inpaint_bridge.comfyui import (
     ComfyUIError,
     InpaintSettings,
 )
+from ai_inpaint_bridge.pixelize import MIN_PALETTE_COLORS, Color, palette_from_strip
 
 BACKENDS = ("invert", "comfyui")
 MAX_SEED = 2**32 - 1
@@ -32,6 +33,7 @@ class BridgeRequest:
     backend: str
     settings: InpaintSettings
     comfyui_url: str
+    palette: Path | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
@@ -52,6 +54,9 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
         "--denoise", type=float, default=0.8, help="0 keeps the pixels, 1 redraws"
     )
     parser.add_argument("--comfyui-url", default=DEFAULT_URL)
+    parser.add_argument(
+        "--palette", type=Path, help="PNG strip of the colors to snap to"
+    )
     args = parser.parse_args(argv)
     seed: int = args.seed if args.seed is not None else random.randint(0, MAX_SEED)
     return BridgeRequest(
@@ -61,15 +66,30 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
         backend=args.backend,
         settings=InpaintSettings(prompt=args.prompt, seed=seed, denoise=args.denoise),
         comfyui_url=args.comfyui_url,
+        palette=args.palette,
     )
+
+
+def load_palette(path: Path | None) -> list[Color] | None:
+    """Read the palette strip exported by Aseprite.
+
+    A palette with a single color (e.g. an uninitialised all-black one) is
+    ignored so that an adaptive palette is used instead.
+    """
+    if path is None:
+        return None
+    with Image.open(path) as strip:
+        palette = palette_from_strip(strip)
+    return palette if len(palette) >= MIN_PALETTE_COLORS else None
 
 
 def run(request: BridgeRequest) -> None:
     """Compute the result image and write it next to the inputs."""
+    palette = load_palette(request.palette)
     with Image.open(request.source) as source, Image.open(request.mask) as mask:
         if request.backend == "comfyui":
             client = ComfyUIClient(request.comfyui_url)
-            result = diffusion_inpaint(source, mask, request.settings, client)
+            result = diffusion_inpaint(source, mask, request.settings, client, palette)
         else:
             result = invert_masked(source, mask)
     result.save(request.output)

@@ -37,13 +37,22 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
     checkpoint: str = DEFAULT_CHECKPOINT
     lora: str = DEFAULT_LORA
     lora_strength: float = 1.0
+    background: str = ""
+
+
+def positive_prompt(settings: InpaintSettings) -> str:
+    """LoRA trigger, user prompt and background hint, skipping empty parts."""
+    parts = [LORA_TRIGGER, settings.prompt]
+    if settings.background:
+        parts.append(f"plain {settings.background} background")
+    return ", ".join(part for part in parts if part)
 
 
 def build_inpaint_workflow(
     image_name: str, mask_name: str, settings: InpaintSettings
 ) -> Workflow:
     """Return the API-format graph: masked img2img on an SD checkpoint with a LoRA."""
-    positive = ", ".join(part for part in (LORA_TRIGGER, settings.prompt) if part)
+    positive = positive_prompt(settings)
     return {
         "1": {
             "class_type": "CheckpointLoaderSimple",

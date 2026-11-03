@@ -4,6 +4,7 @@ local DEFAULT_PREFERENCES = {
   backend = "comfyui",
   prompt = "",
   denoise = 80,
+  use_palette = true,
 }
 local BACKENDS = { "comfyui", "invert" }
 local MAX_ALERT_LINES = 15
@@ -54,6 +55,7 @@ local function ask_generation(prefs)
   dlg:entry{ id = "prompt", label = "Prompt", text = prefs.prompt, focus = true }
   dlg:slider{ id = "denoise", label = "Change strength (%)", min = 0, max = 100,
               value = prefs.denoise }
+  dlg:check{ id = "use_palette", text = "Use the sprite palette", selected = prefs.use_palette }
   dlg:button{ id = "ok", text = "Generate" }
   dlg:button{ id = "cancel", text = "Cancel" }
   dlg:show()
@@ -62,6 +64,7 @@ local function ask_generation(prefs)
   end
   prefs.prompt = dlg.data.prompt
   prefs.denoise = dlg.data.denoise
+  prefs.use_palette = dlg.data.use_palette
   return true
 end
 
@@ -72,6 +75,7 @@ local function run_options(prefs)
     backend = prefs.backend,
     prompt = prefs.prompt,
     denoise = prefs.denoise / 100,
+    use_palette = prefs.use_palette,
   }
 end
 

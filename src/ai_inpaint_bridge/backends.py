@@ -1,10 +1,18 @@
 """Image backends that rewrite the masked area of a region."""
 
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Protocol
 
 from PIL import Image, ImageOps
 
 from ai_inpaint_bridge.comfyui import InpaintSettings
+from ai_inpaint_bridge.pixelize import (
+    Color,
+    opaque_colors,
+    pick_key_color,
+    to_sprite_pixels,
+)
 
 MASK_THRESHOLD = 127
 DIFFUSION_SIZE = 512
@@ -58,24 +66,25 @@ def _pad(image: Image.Image, fill: int | tuple[int, int, int]) -> Image.Image:
 
 
 def upscale_for_diffusion(
-    source: Image.Image, mask: Image.Image, factor: int
+    source: Image.Image,
+    mask: Image.Image,
+    factor: int,
+    background: Color = NEUTRAL_GREY,
 ) -> tuple[Image.Image, Image.Image]:
-    """Flatten on grey, upscale without smoothing and pad to the latent grid."""
+    """Flatten on the background, upscale without smoothing, pad to the latent grid."""
     rgba = source.convert("RGBA")
-    flat = Image.new("RGB", rgba.size, NEUTRAL_GREY)
+    flat = Image.new("RGB", rgba.size, background)
     flat.paste(rgba, (0, 0), rgba)
     size = (source.width * factor, source.height * factor)
     big_image = flat.resize(size, Image.Resampling.NEAREST)
     big_mask = binarize_mask(mask).resize(size, Image.Resampling.NEAREST)
-    return _pad(big_image, NEUTRAL_GREY), _pad(big_mask, 0)
+    return _pad(big_image, background), _pad(big_mask, 0)
 
 
-def downscale_from_diffusion(
-    result: Image.Image, size: tuple[int, int], factor: int
-) -> Image.Image:
-    """Drop the padding and come back to the sprite resolution."""
-    cropped = result.crop((0, 0, size[0] * factor, size[1] * factor))
-    return cropped.resize(size, Image.Resampling.NEAREST)
+def has_transparency(image: Image.Image) -> bool:
+    """True when at least one pixel is not fully opaque."""
+    lowest_alpha = image.convert("RGBA").getchannel("A").getextrema()[0]
+    return isinstance(lowest_alpha, int) and lowest_alpha < 255
 
 
 def diffusion_inpaint(
@@ -83,11 +92,24 @@ def diffusion_inpaint(
     mask: Image.Image,
     settings: InpaintSettings,
     generator: InpaintGenerator,
+    palette: Sequence[Color] | None = None,
 ) -> Image.Image:
-    """Rewrite the masked pixels with the generator, keep the others untouched."""
+    """Rewrite the masked pixels with the generator, keep the others untouched.
+
+    Transparent areas are sent on a key color that is turned back into
+    transparency, then every pixel is snapped to the palette (or to an
+    adaptive one when no palette is given).
+    """
     _check_sizes(source, mask)
+    rgba = source.convert("RGBA")
     factor = scale_factor(source.size)
-    big_image, big_mask = upscale_for_diffusion(source, mask, factor)
+    key, key_name = pick_key_color(opaque_colors(rgba))
+    transparent_area = has_transparency(rgba)
+    if transparent_area:
+        settings = replace(settings, background=key_name)
+    big_image, big_mask = upscale_for_diffusion(rgba, mask, factor, key)
     result = generator.generate(big_image, big_mask, settings)
-    small = downscale_from_diffusion(result, source.size, factor).convert("RGBA")
-    return Image.composite(small, source.convert("RGBA"), binarize_mask(mask))
+    small = to_sprite_pixels(
+        result, source.size, factor, palette, key if transparent_area else None
+    )
+    return Image.composite(small, rgba, binarize_mask(mask))

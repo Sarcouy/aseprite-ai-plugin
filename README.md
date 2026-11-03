@@ -4,7 +4,7 @@ Extension Aseprite qui réécrit la zone sélectionnée d'un sprite avec un mod�
 
 ## État
 
-Itération 2 : génération réelle via ComfyUI (SD 1.5 + LoRA pixel art). Le résultat est brut : pas encore de gestion de la transparence ni de la palette (itération 3).
+Itération 3 : génération via ComfyUI (SD 1.5 + LoRA pixel art), transparence conservée, couleurs ramenées à la palette du sprite, sprites RGB et indexés.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,12 @@ flowchart LR
     A --> D["Nouveau calque<br/>AI inpaint"]
 ```
 
-Le pont agrandit la région sans lissage (facteur entier, côté le plus long vers 512 px), la complète jusqu'à un multiple de 8 pour l'espace latent, puis réduit le résultat en *nearest neighbor*. Les pixels transparents sont envoyés sur fond gris neutre.
+Traitement dans le pont :
+
+1. Les pixels transparents sont posés sur une couleur clé (magenta, vert, cyan ou jaune : celle qui est la plus éloignée des couleurs de la région) et le prompt reçoit `plain <couleur> background`.
+2. La région est agrandie sans lissage (facteur entier, côté le plus long vers 512 px) et complétée jusqu'à un multiple de 8 pour l'espace latent.
+3. Le résultat est ramené à la palette du sprite (ou à une palette adaptative de 16 couleurs si l'option est décochée ou si la palette n'a qu'une couleur), les pixels proches de la couleur clé redeviennent transparents.
+4. Chaque bloc agrandi est réduit à un pixel par vote majoritaire.
 
 ## Prérequis
 
@@ -46,8 +51,8 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
    ./scripts/start-comfyui.sh
    ```
 
-2. Ouvrir un sprite en mode RGB et sélectionner une zone.
-3. **Edit > FX > AI Inpaint Selection**, saisir un prompt en anglais et la force de modification (100 % = la zone est entièrement redessinée).
+2. Ouvrir un sprite (RGB ou indexé) et sélectionner une zone.
+3. **Edit > FX > AI Inpaint Selection**, saisir un prompt en anglais, la force de modification (100 % = la zone est entièrement redessinée) et choisir d'utiliser ou non la palette du sprite (toujours utilisée en mode indexé).
 4. Le résultat arrive dans un nouveau calque `AI inpaint`, uniquement sur les pixels sélectionnés (une seule annulation pour tout défaire).
 
 Le backend se choisit dans **AI Inpaint Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA.
@@ -78,7 +83,7 @@ aseprite -b --script-param bridge="$(poetry env info -p)/bin/ai-inpaint-bridge" 
 
 ## Limites connues
 
-- Sprites en mode RGB uniquement (le mode indexé arrive avec la gestion de palette).
+- Mode niveaux de gris non pris en charge.
 - Aseprite est figé pendant la génération (6 à 8 s sur une RTX 3050 Ti 4 Go).
-- Les zones transparentes ressortent en gris opaque et les couleurs ne respectent pas la palette du sprite.
-- Le modèle suit mal le prompt sur les petites zones.
+- Le résultat varie beaucoup d'une seed à l'autre et l'objet généré est parfois plus petit que la sélection. Ajouter au prompt « single object, game sprite » n'a pas amélioré les résultats lors des essais.
+- Le calque `AI inpaint` se superpose à l'original : un pixel rendu transparent n'efface pas ce qu'il y a dessous.
