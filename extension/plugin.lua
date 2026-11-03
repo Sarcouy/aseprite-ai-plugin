@@ -19,6 +19,9 @@ local CHECKER_SIZE = 8
 local CHECKER_LIGHT = Color{ r = 204, g = 204, b = 204, a = 255 }
 local CHECKER_DARK = Color{ r = 153, g = 153, b = 153, a = 255 }
 local SELECTED_COLOR = Color{ r = 255, g = 196, b = 0, a = 255 }
+local UNCHANGED_COLOR = Color{ r = 220, g = 40, b = 40, a = 255 }
+-- Below this share of changed selected pixels a variant is shown as a miss.
+local UNCHANGED_THRESHOLD = 0.05
 
 local inpaint
 
@@ -139,10 +142,22 @@ end
 -- Returns "one" and the chosen index, "all", or nil when the user cancels.
 local function pick_variant(job)
   local layout = preview_layout(job)
-  local selected = 1
+  local unchanged = {}
+  local selected
+  for i = 1, #job.previews do
+    unchanged[i] = inpaint.changed_fraction(job, i) < UNCHANGED_THRESHOLD
+    if not selected and not unchanged[i] then
+      selected = i
+    end
+  end
+  selected = selected or 1
   local dlg = Dialog("AI Inpaint - Pick a variant")
   local function update_label()
-    dlg:modify{ id = "current", text = "Variant " .. selected .. " of " .. #job.previews }
+    local text = "Variant " .. selected .. " of " .. #job.previews
+    if unchanged[selected] then
+      text = text .. " (nearly unchanged)"
+    end
+    dlg:modify{ id = "current", text = text }
   end
   dlg:canvas{
     id = "previews",
@@ -155,6 +170,16 @@ local function pick_variant(job)
         local rect = cell_rect(layout, i)
         paint_checker(ctx, rect)
         ctx:drawImage(preview, Rectangle(0, 0, preview.width, preview.height), rect)
+        if unchanged[i] then
+          ctx.color = UNCHANGED_COLOR
+          ctx.strokeWidth = 2
+          ctx:beginPath()
+          ctx:moveTo(rect.x, rect.y)
+          ctx:lineTo(rect.x + rect.width, rect.y + rect.height)
+          ctx:moveTo(rect.x + rect.width, rect.y)
+          ctx:lineTo(rect.x, rect.y + rect.height)
+          ctx:stroke()
+        end
         if i == selected then
           ctx.color = SELECTED_COLOR
           ctx.strokeWidth = 3

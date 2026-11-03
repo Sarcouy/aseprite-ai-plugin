@@ -9,6 +9,7 @@ dependencies = ["pillow (>=13.0.0,<14.0.0)", "requests (>=2.34.2,<3.0.0)"]
 
 [project.scripts]
 ai-inpaint-bridge = "ai_inpaint_bridge.cli:main"
+ai-inpaint-bench = "ai_inpaint_bridge.bench:main"
 
 [tool.poetry]
 packages = [{ include = "ai_inpaint_bridge", from = "src" }]

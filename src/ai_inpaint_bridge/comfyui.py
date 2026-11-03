@@ -17,6 +17,8 @@ DEFAULT_NEGATIVE = (
 )
 OUTPUT_NODE = "11"
 REPEAT_NODE = "12"
+INPAINT_UNET_NODE = "13"
+DEFAULT_INPAINT_MODEL = "sd-v1-5-inpainting-unet-fp16.safetensors"
 
 Workflow = dict[str, dict[str, Any]]
 
@@ -33,19 +35,24 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
     seed: int
     denoise: float = 0.8
     steps: int = 20
-    cfg: float = 7.0
+    cfg: float = 10.0
+    sampler: str = "euler_ancestral"
+    scheduler: str = "normal"
     negative_prompt: str = DEFAULT_NEGATIVE
     checkpoint: str = DEFAULT_CHECKPOINT
     lora: str = DEFAULT_LORA
     lora_strength: float = 1.0
     background: str = ""
+    background_hint: bool = False
     batch_size: int = 1
+    inpaint_model: str = DEFAULT_INPAINT_MODEL
+    mask_grow: int = 2
 
 
 def positive_prompt(settings: InpaintSettings) -> str:
     """LoRA trigger, user prompt and background hint, skipping empty parts."""
     parts = [LORA_TRIGGER, settings.prompt]
-    if settings.background:
+    if settings.background and settings.background_hint:
         parts.append(f"plain {settings.background} background")
     return ", ".join(part for part in parts if part)
 
@@ -53,9 +60,13 @@ def positive_prompt(settings: InpaintSettings) -> str:
 def build_inpaint_workflow(
     image_name: str, mask_name: str, settings: InpaintSettings
 ) -> Workflow:
-    """Return the API-format graph: masked img2img on an SD checkpoint with a LoRA."""
+    """Return the API-format graph: masked img2img on an SD checkpoint with a LoRA.
+
+    With an inpaint_model, its UNet replaces the checkpoint's one (CLIP and VAE
+    are shared with SD 1.5) and also receives the masked image as conditioning.
+    """
     positive = positive_prompt(settings)
-    return {
+    workflow: Workflow = {
         "1": {
             "class_type": "CheckpointLoaderSimple",
             "inputs": {"ckpt_name": settings.checkpoint},
@@ -105,8 +116,8 @@ def build_inpaint_workflow(
                 "seed": settings.seed,
                 "steps": settings.steps,
                 "cfg": settings.cfg,
-                "sampler_name": "euler_ancestral",
-                "scheduler": "normal",
+                "sampler_name": settings.sampler,
+                "scheduler": settings.scheduler,
                 "denoise": settings.denoise,
             },
         },
@@ -116,6 +127,34 @@ def build_inpaint_workflow(
         },
         OUTPUT_NODE: {"class_type": "PreviewImage", "inputs": {"images": ["10", 0]}},
     }
+    if settings.inpaint_model:
+        _use_inpaint_model(workflow, settings.inpaint_model)
+    return workflow
+
+
+def _use_inpaint_model(workflow: Workflow, unet_name: str) -> None:
+    workflow[INPAINT_UNET_NODE] = {
+        "class_type": "UNETLoader",
+        "inputs": {"unet_name": unet_name, "weight_dtype": "default"},
+    }
+    workflow["2"]["inputs"]["model"] = [INPAINT_UNET_NODE, 0]
+    workflow["7"] = {
+        "class_type": "InpaintModelConditioning",
+        "inputs": {
+            "positive": ["3", 0],
+            "negative": ["4", 0],
+            "vae": ["1", 2],
+            "pixels": ["5", 0],
+            "mask": ["6", 0],
+            "noise_mask": True,
+        },
+    }
+    workflow[REPEAT_NODE]["inputs"]["samples"] = ["7", 2]
+    del workflow["8"]
+    sampler = workflow["9"]["inputs"]
+    sampler["positive"] = ["7", 0]
+    sampler["negative"] = ["7", 1]
+    sampler["latent_image"] = [REPEAT_NODE, 0]
 
 
 def _png_bytes(image: Image.Image) -> bytes:

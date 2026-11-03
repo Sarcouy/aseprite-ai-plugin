@@ -4,11 +4,13 @@ from collections.abc import Sequence
 from dataclasses import replace
 from typing import Protocol
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from ai_inpaint_bridge.comfyui import InpaintSettings
 from ai_inpaint_bridge.pixelize import (
     Color,
+    band_values,
+    pixel_tuples,
     opaque_colors,
     pick_key_color,
     to_sprite_pixels,
@@ -34,6 +36,29 @@ class InpaintGenerator(
 def binarize_mask(mask: Image.Image) -> Image.Image:
     """Return a mode "1"-like L mask: 255 inside the selection, 0 outside."""
     return mask.convert("L").point(lambda value: 255 if value > MASK_THRESHOLD else 0)
+
+
+def grow_mask(mask: Image.Image, pixels: int) -> Image.Image:
+    """Binarized mask dilated by the given number of pixels (square neighbourhood)."""
+    binary = binarize_mask(mask)
+    if pixels <= 0:
+        return binary
+    return binary.filter(ImageFilter.MaxFilter(2 * pixels + 1))
+
+
+def changed_fraction(
+    original: Image.Image, result: Image.Image, mask: Image.Image
+) -> float:
+    """Share of the selected pixels whose RGBA value differs from the original."""
+    selected = [value > MASK_THRESHOLD for value in band_values(binarize_mask(mask))]
+    before = pixel_tuples(original.convert("RGBA"))
+    after = pixel_tuples(result.convert("RGBA"))
+    changed = [
+        old != new and (old[3] > 0 or new[3] > 0)
+        for old, new, keep in zip(before, after, selected)
+        if keep
+    ]
+    return sum(changed) / len(changed) if changed else 0.0
 
 
 def _check_sizes(source: Image.Image, mask: Image.Image) -> None:
@@ -96,7 +121,9 @@ def diffusion_inpaint(
 ) -> list[Image.Image]:
     """Rewrite the masked pixels with the generator, keep the others untouched.
 
-    One result is returned per generated image (settings.batch_size).
+    One result is returned per generated image (settings.batch_size). The
+    mask sent to the generator is grown by settings.mask_grow pixels so that
+    edges drawn along it fall outside the selection, which alone is kept.
 
     Transparent areas are sent on a key color that is turned back into
     transparency, then every pixel is snapped to the palette (or to an
@@ -109,7 +136,9 @@ def diffusion_inpaint(
     transparent_area = has_transparency(rgba)
     if transparent_area:
         settings = replace(settings, background=key_name)
-    big_image, big_mask = upscale_for_diffusion(rgba, mask, factor, key)
+    big_image, big_mask = upscale_for_diffusion(
+        rgba, grow_mask(mask, settings.mask_grow), factor, key
+    )
     results = generator.generate(big_image, big_mask, settings)
     if len(results) != settings.batch_size:
         raise ValueError(

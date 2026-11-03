@@ -24,7 +24,8 @@ def _distance2(first: Color, second: Color) -> int:
     return sum((a - b) ** 2 for a, b in zip(first, second))
 
 
-def _pixels(image: Image.Image) -> list[tuple[int, ...]]:
+def pixel_tuples(image: Image.Image) -> list[tuple[int, ...]]:
+    """Pixels of a multi-band image as integer tuples, row by row."""
     return [
         tuple(int(c) for c in pixel)
         for pixel in image.get_flattened_data()
@@ -32,7 +33,8 @@ def _pixels(image: Image.Image) -> list[tuple[int, ...]]:
     ]
 
 
-def _band_values(image: Image.Image) -> list[int]:
+def band_values(image: Image.Image) -> list[int]:
+    """Pixels of a single-band image as integers, row by row."""
     return [
         int(value)
         for value in image.get_flattened_data()
@@ -43,7 +45,7 @@ def _band_values(image: Image.Image) -> list[int]:
 def palette_from_strip(image: Image.Image) -> list[Color]:
     """Colors of a palette strip, in order, without duplicates or transparent entries."""
     colors: dict[Color, None] = {}
-    for red, green, blue, alpha in _pixels(image.convert("RGBA")):
+    for red, green, blue, alpha in pixel_tuples(image.convert("RGBA")):
         if alpha > 0:
             colors.setdefault((red, green, blue), None)
     return list(colors)
@@ -51,7 +53,9 @@ def palette_from_strip(image: Image.Image) -> list[Color]:
 
 def opaque_colors(image: Image.Image) -> list[Color]:
     """Distinct colors of the pixels that are not fully transparent."""
-    return sorted({(r, g, b) for r, g, b, a in _pixels(image.convert("RGBA")) if a > 0})
+    return sorted(
+        {(r, g, b) for r, g, b, a in pixel_tuples(image.convert("RGBA")) if a > 0}
+    )
 
 
 def pick_key_color(colors: Sequence[Color]) -> tuple[Color, str]:
@@ -86,7 +90,7 @@ def _quantize(
         colors = [
             (flat[i], flat[i + 1], flat[i + 2]) for i in range(0, len(flat) - 2, 3)
         ]
-    indices = [index if index < len(colors) else 0 for index in _band_values(quantized)]
+    indices = [index if index < len(colors) else 0 for index in band_values(quantized)]
     return indices, colors
 
 
@@ -122,7 +126,7 @@ def to_sprite_pixels(
         tolerance = KEY_TOLERANCE**2
         labels = [
             TRANSPARENT if _distance2((p[0], p[1], p[2]), key) < tolerance else label
-            for p, label in zip(_pixels(cropped), labels)
+            for p, label in zip(pixel_tuples(cropped), labels)
         ]
     small = Image.new("RGBA", size, (0, 0, 0, 0))
     for position, label in enumerate(_vote_blocks(labels, size, factor)):

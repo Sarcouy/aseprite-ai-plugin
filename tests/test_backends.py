@@ -7,7 +7,9 @@ from PIL import Image
 
 from ai_inpaint_bridge.backends import (
     LATENT_MULTIPLE,
+    changed_fraction,
     diffusion_inpaint,
+    grow_mask,
     scale_factor,
     upscale_for_diffusion,
 )
@@ -138,3 +140,45 @@ def test_missing_images_are_reported() -> None:
         diffusion_inpaint(
             source, mask, replace(SETTINGS, batch_size=2), SingleImageGenerator()
         )
+
+
+def test_grow_mask_dilates_by_whole_pixels() -> None:
+    """A 2x2 selection grown by 1 becomes 4x4, 0 keeps it unchanged."""
+    _, mask = make_inputs()
+
+    assert grow_mask(mask, 0).getbbox() == (4, 2, 6, 4)
+    assert grow_mask(mask, 1).getbbox() == (3, 1, 7, 5)
+
+
+def test_grown_mask_is_sent_but_only_the_selection_is_kept() -> None:
+    """The generator sees a larger hole, the result changes only selected pixels."""
+    source, mask = make_inputs()
+    generator = SolidGenerator()
+
+    [result] = diffusion_inpaint(
+        source, mask, replace(SETTINGS, mask_grow=1), generator
+    )
+
+    sent_mask = generator.received[0][1]
+    factor = sent_mask.width // 10
+    assert sent_mask.getpixel((3 * factor, 1 * factor)) == 255
+    assert result.getpixel((3, 1)) == BLUE
+    assert result.getpixel((4, 2)) == (*GREEN, 255)
+
+
+def test_changed_fraction_counts_only_selected_pixels() -> None:
+    """Untouched selections score 0, a fully redrawn one scores 1."""
+    source, mask = make_inputs()
+    [redrawn] = diffusion_inpaint(source, mask, SETTINGS, SolidGenerator())
+
+    assert changed_fraction(source, source, mask) == 0.0
+    assert changed_fraction(source, redrawn, mask) == 1.0
+
+
+def test_transparent_pixels_count_as_unchanged_whatever_their_rgb() -> None:
+    """Two fully transparent pixels are equal even with different hidden colors."""
+    original = Image.new("RGBA", (2, 1), (0, 0, 0, 0))
+    result = Image.new("RGBA", (2, 1), (255, 0, 255, 0))
+    mask = Image.new("L", (2, 1), 255)
+
+    assert changed_fraction(original, result, mask) == 0.0

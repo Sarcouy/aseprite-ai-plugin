@@ -47,6 +47,12 @@ local job, message = inpaint.generate(sprite, sprite.frames[1], {
 assert(job, message)
 assert(#job.patches == variants, "expected " .. variants .. " patches, got " .. #job.patches)
 assert(#job.previews == variants, "expected " .. variants .. " previews")
+if backend == "invert" then
+  assert(inpaint.changed_fraction(job, 1) == 1, "invert must change every selected pixel")
+end
+local untouched = { region = job.region, mask = job.mask, original = job.original,
+                    previews = { job.original } }
+assert(inpaint.changed_fraction(untouched, 1) == 0, "the original must count as unchanged")
 inpaint.apply_new_layer(sprite, sprite.frames[1], job, variants)
 
 local top = sprite.layers[#sprite.layers]

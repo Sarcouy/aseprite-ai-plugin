@@ -153,7 +153,7 @@ local function read_variants(paths, region, output)
   return results
 end
 
--- Returns a job { region, mask, previews, patches } on success, or nil and a message
+-- Returns a job { region, mask, original, previews, patches } on success, or nil and a message
 -- for the user. previews are RGBA images of the whole region, patches hold only
 -- the selected pixels in the sprite color mode.
 function inpaint.generate(sprite, frame, options)
@@ -172,7 +172,8 @@ function inpaint.generate(sprite, frame, options)
   local use_palette = options.use_palette or sprite.colorMode == ColorMode.INDEXED
   local paths = temp_paths(use_palette, options.variants or 1)
   local mask = build_mask(selection, region)
-  render_region(sprite, frame, region):saveAs(paths.input)
+  local original = render_region(sprite, frame, region)
+  original:saveAs(paths.input)
   mask:saveAs(paths.mask)
   if use_palette then
     export_palette(sprite, paths.palette)
@@ -194,7 +195,26 @@ function inpaint.generate(sprite, frame, options)
   for i, result in ipairs(results) do
     patches[i] = build_patch(sprite, result, selection, region)
   end
-  return { region = region, mask = mask, previews = results, patches = patches }
+  return { region = region, mask = mask, original = original, previews = results,
+           patches = patches }
+end
+
+-- Share of the selected pixels that the variant changed, from 0 to 1. Two
+-- fully transparent pixels are equal whatever their hidden color.
+function inpaint.changed_fraction(job, index)
+  local preview, selected, changed = job.previews[index], 0, 0
+  for y = 0, job.region.height - 1 do
+    for x = 0, job.region.width - 1 do
+      if job.mask:getPixel(x, y) == WHITE then
+        selected = selected + 1
+        local before, after = job.original:getPixel(x, y), preview:getPixel(x, y)
+        if before ~= after and (pc.rgbaA(before) > 0 or pc.rgbaA(after) > 0) then
+          changed = changed + 1
+        end
+      end
+    end
+  end
+  return selected > 0 and changed / selected or 0
 end
 
 -- Adds the chosen patch of a job in a new layer, as a single undo step.
