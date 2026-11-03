@@ -93,10 +93,10 @@ local function run_bridge(options, paths)
   -- LC_NUMERIC may use a decimal comma, which argparse would reject.
   local denoise = string.format("%.2f", options.denoise or 0.8):gsub(",", ".")
   local cmd = string.format(
-    "%s --input %s --mask %s --output %s --backend %s --prompt %s --denoise %s",
+    "%s --input %s --mask %s --output %s --backend %s --prompt %s --denoise %s --variants %d",
     options.bridge_command, shell_quote(paths.input), shell_quote(paths.mask),
     shell_quote(paths.output), shell_quote(options.backend or "invert"),
-    shell_quote(options.prompt or ""), denoise)
+    shell_quote(options.prompt or ""), denoise, #paths.variants)
   if paths.palette then
     cmd = cmd .. " --palette " .. shell_quote(paths.palette)
   end
@@ -108,62 +108,170 @@ local function run_bridge(options, paths)
   return handle:close() == true, output
 end
 
-local function temp_paths(with_palette)
+-- The bridge writes variant i of "<run>-output.png" to "<run>-output-<i>.png".
+local function temp_paths(with_palette, variants)
   local dir = app.fs.joinPath(app.fs.tempPath, "aseprite-ai-inpaint")
   app.fs.makeAllDirectories(dir)
   local run_id = os.time() .. "-" .. math.random(100000, 999999)
   local function path(name)
     return app.fs.joinPath(dir, run_id .. "-" .. name .. ".png")
   end
+  local outputs = {}
+  for i = 1, variants do
+    outputs[i] = path("output-" .. i)
+  end
   return {
     input = path("input"),
     mask = path("mask"),
     output = path("output"),
     palette = with_palette and path("palette") or nil,
+    variants = outputs,
   }
 end
 
--- Returns true on success, or false and a message for the user.
-function inpaint.run(sprite, frame, options)
+local function remove_files(paths)
+  for _, path in ipairs({ paths.input, paths.mask, paths.palette }) do
+    os.remove(path)
+  end
+  for _, path in ipairs(paths.variants) do
+    os.remove(path)
+  end
+end
+
+local function read_variants(paths, region, output)
+  local results = {}
+  for i, path in ipairs(paths.variants) do
+    if not app.fs.isFile(path) then
+      return nil, "The bridge produced no image for variant " .. i .. ":\n" .. output
+    end
+    local result = Image{ fromFile = path }
+    if not result or result.width ~= region.width or result.height ~= region.height then
+      return nil, "The bridge returned an image of unexpected size."
+    end
+    results[i] = result
+  end
+  return results
+end
+
+-- Returns a job { region, mask, previews, patches } on success, or nil and a message
+-- for the user. previews are RGBA images of the whole region, patches hold only
+-- the selected pixels in the sprite color mode.
+function inpaint.generate(sprite, frame, options)
   if sprite.colorMode == ColorMode.GRAY then
-    return false, "Grayscale sprites are not supported."
+    return nil, "Grayscale sprites are not supported."
   end
   local selection = sprite.selection
   if selection.isEmpty then
-    return false, "Select the area to rewrite first."
+    return nil, "Select the area to rewrite first."
   end
   local region = context_region(sprite, selection, options.margin)
   if region.isEmpty then
-    return false, "The selection is outside the canvas."
+    return nil, "The selection is outside the canvas."
   end
 
   local use_palette = options.use_palette or sprite.colorMode == ColorMode.INDEXED
-  local paths = temp_paths(use_palette)
+  local paths = temp_paths(use_palette, options.variants or 1)
+  local mask = build_mask(selection, region)
   render_region(sprite, frame, region):saveAs(paths.input)
-  build_mask(selection, region):saveAs(paths.mask)
+  mask:saveAs(paths.mask)
   if use_palette then
     export_palette(sprite, paths.palette)
   end
 
   local ok, output = run_bridge(options, paths)
-  if not ok then
-    return false, "The bridge failed:\n" .. output
+  local results, message
+  if ok then
+    results, message = read_variants(paths, region, output)
+  else
+    message = "The bridge failed:\n" .. output
   end
-  if not app.fs.isFile(paths.output) then
-    return false, "The bridge produced no image:\n" .. output
-  end
-  local result = Image{ fromFile = paths.output }
-  if not result or result.width ~= region.width or result.height ~= region.height then
-    return false, "The bridge returned an image of unexpected size."
+  remove_files(paths)
+  if not results then
+    return nil, message
   end
 
-  local patch = build_patch(sprite, result, selection, region)
+  local patches = {}
+  for i, result in ipairs(results) do
+    patches[i] = build_patch(sprite, result, selection, region)
+  end
+  return { region = region, mask = mask, previews = results, patches = patches }
+end
+
+-- Adds the chosen patch of a job in a new layer, as a single undo step.
+function inpaint.apply_new_layer(sprite, frame, job, index)
   app.transaction(LAYER_NAME, function()
     local layer = sprite:newLayer()
     layer.name = LAYER_NAME
-    sprite:newCel(layer, frame, patch, Point(region.x, region.y))
+    sprite:newCel(layer, frame, job.patches[index], Point(job.region.x, job.region.y))
   end)
-  return true
+end
+
+-- Adds every patch of a job in a group, one layer per variant, only the first
+-- one visible, as a single undo step.
+function inpaint.apply_all_layers(sprite, frame, job)
+  app.transaction(LAYER_NAME, function()
+    local group = sprite:newGroup()
+    group.name = LAYER_NAME
+    for i = #job.patches, 1, -1 do
+      local layer = sprite:newLayer()
+      layer.name = "Variant " .. i
+      layer.parent = group
+      layer.isVisible = i == 1
+      sprite:newCel(layer, frame, job.patches[i], Point(job.region.x, job.region.y))
+    end
+  end)
+end
+
+-- Returns nil when the layer can receive a patch, otherwise a message for the user.
+function inpaint.active_layer_problem(layer)
+  if not layer then
+    return "Select a layer first."
+  end
+  if layer.isGroup or layer.isTilemap or layer.isReference then
+    return "The active layer must be a regular image layer."
+  end
+  if not layer.isEditable then
+    return "The active layer is locked."
+  end
+  return nil
+end
+
+-- Writes the chosen patch into the layer, selected pixels included when they
+-- are transparent, so that the result can erase the original. On a background
+-- layer transparency becomes the background color, as with the eraser.
+function inpaint.apply_active_layer(sprite, frame, job, index, layer)
+  local patch, region = job.patches[index], job.region
+  local transparent = sprite.colorMode == ColorMode.INDEXED and sprite.transparentColor or 0
+  local erased = transparent
+  if layer.isBackground then
+    erased = sprite.colorMode == ColorMode.INDEXED and app.bgColor.index or app.bgColor.rgbaPixel
+  end
+  app.transaction(LAYER_NAME, function()
+    local cel = layer:cel(frame)
+    local canvas = Image(sprite.spec)
+    canvas:clear(transparent)
+    if cel then
+      canvas:drawImage(cel.image, cel.position)
+    end
+    for y = 0, region.height - 1 do
+      for x = 0, region.width - 1 do
+        if job.mask:getPixel(x, y) == WHITE then
+          local value = patch:getPixel(x, y)
+          local is_transparent = value == transparent
+          if sprite.colorMode ~= ColorMode.INDEXED then
+            is_transparent = pc.rgbaA(value) == 0
+          end
+          canvas:putPixel(region.x + x, region.y + y, is_transparent and erased or value)
+        end
+      end
+    end
+    if cel then
+      cel.image = canvas
+      cel.position = Point(0, 0)
+    else
+      sprite:newCel(layer, frame, canvas, Point(0, 0))
+    end
+  end)
 end
 
 return inpaint

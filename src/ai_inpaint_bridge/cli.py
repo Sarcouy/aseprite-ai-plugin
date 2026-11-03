@@ -21,6 +21,7 @@ from ai_inpaint_bridge.pixelize import MIN_PALETTE_COLORS, Color, palette_from_s
 
 BACKENDS = ("invert", "comfyui")
 MAX_SEED = 2**32 - 1
+MAX_VARIANTS = 8
 
 
 @dataclass(frozen=True)
@@ -46,12 +47,25 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
     parser.add_argument(
         "--mask", type=Path, required=True, help="mask PNG, white = rewrite"
     )
-    parser.add_argument("--output", type=Path, required=True, help="result PNG")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="result PNG name, variant i is written as <stem>-<i><suffix>",
+    )
     parser.add_argument("--backend", choices=BACKENDS, default="invert")
     parser.add_argument("--prompt", default="", help="what to draw in the selection")
     parser.add_argument("--seed", type=int, help="random when omitted")
     parser.add_argument(
         "--denoise", type=float, default=0.8, help="0 keeps the pixels, 1 redraws"
+    )
+    parser.add_argument(
+        "--variants",
+        type=int,
+        default=1,
+        choices=range(1, MAX_VARIANTS + 1),
+        metavar=f"1..{MAX_VARIANTS}",
+        help="number of results generated in one pass",
     )
     parser.add_argument("--comfyui-url", default=DEFAULT_URL)
     parser.add_argument(
@@ -64,7 +78,12 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
         mask=args.mask,
         output=args.output,
         backend=args.backend,
-        settings=InpaintSettings(prompt=args.prompt, seed=seed, denoise=args.denoise),
+        settings=InpaintSettings(
+            prompt=args.prompt,
+            seed=seed,
+            denoise=args.denoise,
+            batch_size=args.variants,
+        ),
         comfyui_url=args.comfyui_url,
         palette=args.palette,
     )
@@ -83,16 +102,22 @@ def load_palette(path: Path | None) -> list[Color] | None:
     return palette if len(palette) >= MIN_PALETTE_COLORS else None
 
 
+def variant_path(output: Path, index: int) -> Path:
+    """Path of the variant numbered from 1: out.png gives out-1.png, out-2.png..."""
+    return output.with_name(f"{output.stem}-{index}{output.suffix}")
+
+
 def run(request: BridgeRequest) -> None:
-    """Compute the result image and write it next to the inputs."""
+    """Compute the result images and write them next to the inputs."""
     palette = load_palette(request.palette)
     with Image.open(request.source) as source, Image.open(request.mask) as mask:
         if request.backend == "comfyui":
             client = ComfyUIClient(request.comfyui_url)
-            result = diffusion_inpaint(source, mask, request.settings, client, palette)
+            results = diffusion_inpaint(source, mask, request.settings, client, palette)
         else:
-            result = invert_masked(source, mask)
-    result.save(request.output)
+            results = [invert_masked(source, mask)] * request.settings.batch_size
+    for index, result in enumerate(results, start=1):
+        result.save(variant_path(request.output, index))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

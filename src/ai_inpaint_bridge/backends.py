@@ -27,8 +27,8 @@ class InpaintGenerator(
 
     def generate(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
-    ) -> Image.Image:
-        """Return an RGB image of the same size as the input."""
+    ) -> list[Image.Image]:
+        """Return settings.batch_size RGB images of the same size as the input."""
 
 
 def binarize_mask(mask: Image.Image) -> Image.Image:
@@ -93,8 +93,10 @@ def diffusion_inpaint(
     settings: InpaintSettings,
     generator: InpaintGenerator,
     palette: Sequence[Color] | None = None,
-) -> Image.Image:
+) -> list[Image.Image]:
     """Rewrite the masked pixels with the generator, keep the others untouched.
+
+    One result is returned per generated image (settings.batch_size).
 
     Transparent areas are sent on a key color that is turned back into
     transparency, then every pixel is snapped to the palette (or to an
@@ -108,8 +110,18 @@ def diffusion_inpaint(
     if transparent_area:
         settings = replace(settings, background=key_name)
     big_image, big_mask = upscale_for_diffusion(rgba, mask, factor, key)
-    result = generator.generate(big_image, big_mask, settings)
-    small = to_sprite_pixels(
-        result, source.size, factor, palette, key if transparent_area else None
-    )
-    return Image.composite(small, rgba, binarize_mask(mask))
+    results = generator.generate(big_image, big_mask, settings)
+    if len(results) != settings.batch_size:
+        raise ValueError(
+            f"expected {settings.batch_size} generated images, got {len(results)}"
+        )
+    selection = binarize_mask(mask)
+    key_out = key if transparent_area else None
+    return [
+        Image.composite(
+            to_sprite_pixels(result, source.size, factor, palette, key_out),
+            rgba,
+            selection,
+        )
+        for result in results
+    ]

@@ -1,5 +1,8 @@
 """Tests of the diffusion pre and post processing with a fake generator."""
 
+from dataclasses import replace
+
+import pytest
 from PIL import Image
 
 from ai_inpaint_bridge.backends import (
@@ -26,10 +29,10 @@ class SolidGenerator:  # pylint: disable=too-few-public-methods  # test double o
 
     def generate(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
-    ) -> Image.Image:
-        """Return an image of the input size filled with the configured color."""
+    ) -> list[Image.Image]:
+        """Return batch_size images of the input size filled with the configured color."""
         self.received.append((image, mask, settings))
-        return Image.new("RGB", image.size, self.color)
+        return [Image.new("RGB", image.size, self.color)] * settings.batch_size
 
 
 def make_inputs() -> tuple[Image.Image, Image.Image]:
@@ -65,7 +68,7 @@ def test_diffusion_inpaint_only_rewrites_the_selection() -> None:
     source, mask = make_inputs()
     generator = SolidGenerator()
 
-    result = diffusion_inpaint(source, mask, SETTINGS, generator)
+    [result] = diffusion_inpaint(source, mask, SETTINGS, generator)
 
     assert len(generator.received) == 1
     assert generator.received[0][2] == SETTINGS
@@ -85,7 +88,7 @@ def test_transparent_region_is_sent_on_a_key_color_and_keyed_back() -> None:
     key, key_name = pick_key_color([BLUE[:3]])
     generator = SolidGenerator(key)
 
-    result = diffusion_inpaint(source, mask, SETTINGS, generator)
+    [result] = diffusion_inpaint(source, mask, SETTINGS, generator)
 
     sent_image, _, sent_settings = generator.received[0]
     assert sent_image.getpixel((sent_image.width - 1, 0)) == key
@@ -98,7 +101,40 @@ def test_opaque_region_never_turns_transparent() -> None:
     """Without transparency in the region, key-like colors are kept as colors."""
     source, mask = make_inputs()
 
-    result = diffusion_inpaint(source, mask, SETTINGS, SolidGenerator(MAGENTA))
+    [result] = diffusion_inpaint(source, mask, SETTINGS, SolidGenerator(MAGENTA))
 
     pixel = result.getpixel((4, 2))
     assert isinstance(pixel, tuple) and pixel[3] == 255
+
+
+def test_one_result_per_generated_image() -> None:
+    """Every image of the batch becomes its own result, in order."""
+    source, mask = make_inputs()
+
+    results = diffusion_inpaint(
+        source, mask, replace(SETTINGS, batch_size=3), SolidGenerator()
+    )
+
+    assert len(results) == 3
+    assert all(result.getpixel((4, 2)) == (*GREEN, 255) for result in results)
+
+
+class SingleImageGenerator:  # pylint: disable=too-few-public-methods  # test double of the single-method InpaintGenerator protocol
+    """Ignores the requested batch size and always returns one image."""
+
+    def generate(
+        self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
+    ) -> list[Image.Image]:
+        """Return one green image of the input size."""
+        del mask, settings
+        return [Image.new("RGB", image.size, GREEN)]
+
+
+def test_missing_images_are_reported() -> None:
+    """A generator returning fewer images than requested is an error."""
+    source, mask = make_inputs()
+
+    with pytest.raises(ValueError, match="expected 2"):
+        diffusion_inpaint(
+            source, mask, replace(SETTINGS, batch_size=2), SingleImageGenerator()
+        )

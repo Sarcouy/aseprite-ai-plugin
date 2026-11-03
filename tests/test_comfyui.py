@@ -3,6 +3,7 @@
 from ai_inpaint_bridge.comfyui import (
     LORA_TRIGGER,
     OUTPUT_NODE,
+    REPEAT_NODE,
     InpaintSettings,
     build_inpaint_workflow,
 )
@@ -46,3 +47,14 @@ def test_empty_prompt_keeps_only_the_trigger() -> None:
     workflow = build_inpaint_workflow("in.png", "mask.png", InpaintSettings("", 0))
 
     assert workflow["3"]["inputs"]["text"] == LORA_TRIGGER
+
+
+def test_batch_size_repeats_the_encoded_latent() -> None:
+    """The image is encoded once and repeated before the noise mask is set."""
+    workflow = build_inpaint_workflow(
+        "in.png", "mask.png", InpaintSettings("", 0, batch_size=4)
+    )
+
+    assert workflow[REPEAT_NODE]["class_type"] == "RepeatLatentBatch"
+    assert workflow[REPEAT_NODE]["inputs"] == {"samples": ["7", 0], "amount": 4}
+    assert workflow["8"]["inputs"]["samples"] == [REPEAT_NODE, 0]

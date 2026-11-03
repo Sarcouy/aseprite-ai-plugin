@@ -16,6 +16,7 @@ DEFAULT_NEGATIVE = (
     "blurry, smooth, gradient, photo, realistic, 3d render, text, watermark"
 )
 OUTPUT_NODE = "11"
+REPEAT_NODE = "12"
 
 Workflow = dict[str, dict[str, Any]]
 
@@ -38,6 +39,7 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
     lora: str = DEFAULT_LORA
     lora_strength: float = 1.0
     background: str = ""
+    batch_size: int = 1
 
 
 def positive_prompt(settings: InpaintSettings) -> str:
@@ -85,9 +87,13 @@ def build_inpaint_workflow(
             "class_type": "VAEEncode",
             "inputs": {"pixels": ["5", 0], "vae": ["1", 2]},
         },
+        REPEAT_NODE: {
+            "class_type": "RepeatLatentBatch",
+            "inputs": {"samples": ["7", 0], "amount": settings.batch_size},
+        },
         "8": {
             "class_type": "SetLatentNoiseMask",
-            "inputs": {"samples": ["7", 0], "mask": ["6", 0]},
+            "inputs": {"samples": [REPEAT_NODE, 0], "mask": ["6", 0]},
         },
         "9": {
             "class_type": "KSampler",
@@ -135,12 +141,12 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
 
     def generate(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
-    ) -> Image.Image:
-        """Run the inpainting workflow and return the decoded image."""
+    ) -> list[Image.Image]:
+        """Run the inpainting workflow and return the decoded images in batch order."""
         image_name = self._upload(image, "aseprite-ai-inpaint-input.png")
         mask_name = self._upload(mask, "aseprite-ai-inpaint-mask.png")
         prompt_id = self._queue(build_inpaint_workflow(image_name, mask_name, settings))
-        return self._download(self._wait(prompt_id))
+        return self._download_all(self._wait(prompt_id))
 
     def _upload(self, image: Image.Image, name: str) -> str:
         response = self._session.post(
@@ -177,11 +183,15 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
             time.sleep(self._poll_interval)
         raise ComfyUIError(f"no result after {self._timeout:.0f} s")
 
-    def _download(self, entry: dict[str, Any]) -> Image.Image:
-        images = entry.get("outputs", {}).get(OUTPUT_NODE, {}).get("images", [])
-        if not images:
+    def _download_all(self, entry: dict[str, Any]) -> list[Image.Image]:
+        refs: list[dict[str, str]] = (
+            entry.get("outputs", {}).get(OUTPUT_NODE, {}).get("images", [])
+        )
+        if not refs:
             raise ComfyUIError("the workflow produced no image")
-        ref = images[0]
+        return [self._download(ref) for ref in refs]
+
+    def _download(self, ref: dict[str, str]) -> Image.Image:
         response = self._session.get(
             f"{self._base_url}/view",
             params={
