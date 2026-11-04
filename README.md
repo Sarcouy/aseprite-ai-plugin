@@ -126,6 +126,55 @@ Résultats des essais (seeds 1000 et 2000, 4 variantes par scène) :
 | LoRA à 0,6 | pas de gain |
 | `dpmpp_2m` / karras, 30 étapes | moins bon |
 
+### Modèles récents sur 4 Go de VRAM
+
+Mesures de génération texte vers image à 512×512 sur RTX 3050 Ti 4 Go, avec ComfyUI 0.43 en `--lowvram`. Aucun de ces modèles n'est encore branché dans le pont.
+
+Conditions de mesure :
+
+- Profil d'énergie `performance`, sur secteur. Avec le profil `balanced`, le GPU est limité à 20 W et tourne à 210 MHz : tous les temps sont multipliés par 4 à 5.
+- GPU à 40 W, de 900 à 1200 MHz, de 75 à 88 °C.
+- Encodeur de texte Qwen3 4B en fp8 (`qwen_3_4b_fp8_mixed`), commun aux trois modèles.
+- « À chaud » : médiane de 3 générations, modèle déjà chargé. « À froid » : juste après le déchargement des modèles (`/free`), fichiers probablement encore dans le cache disque du système.
+- Pic de VRAM relevé par `nvidia-smi` toutes les 0,2 s, mémoire réservée par PyTorch comprise.
+
+| Modèle | Réglages | 1 image à chaud | 1 image à froid | 4 images | LoRA, 1 image | LoRA, 4 images | Pic de VRAM |
+|--------|----------|-----------------|-----------------|----------|---------------|----------------|-------------|
+| FLUX.2 klein 4B distillé | fp8, 4 étapes, CFG 1, `euler` | 9,6 s | 10,9 s | 25,8 s | 12,9 s | 28,9 s | 3759 Mio |
+| Z-Image Turbo | int8 convrot, 8 étapes, CFG 1, `res_multistep` | 25,7 s | 29,6 s | 77,3 s | 49,2 s | 111,2 s | 3633 Mio |
+| FLUX.2 klein 4B base | fp8, 20 étapes, CFG 5, `euler` | 57,7 s | 66,3 s | 205,2 s | 67,1 s | non mesuré | 3503 Mio |
+
+Aucune génération n'a manqué de mémoire. Le changement de modèle coûte 1 à 9 s de plus que la génération à chaud, mesuré juste après une autre génération : les fichiers étaient probablement encore dans le cache disque. Depuis le disque, il faut compter davantage.
+
+Sur 31 Go de RAM, il reste au plus bas 3,4 Go de libre (Z-Image avec LoRA, Firefox ouvert) : la RAM est la contrainte suivante après la VRAM. L'encodeur en fp4 (`qwen_3_4b_fp4_mixed`, 3,5 Go au lieu de 5,3) libère de la RAM sans changer la vitesse.
+
+LoRA testées :
+
+| LoRA | Modèle | Effet |
+|------|--------|-------|
+| [Limbicnation/pixel-art-lora](https://huggingface.co/Limbicnation/pixel-art-lora) | klein distillé | presque aucun effet à même prompt et même seed (contours un peu plus nets) ; 6 clés de modulation ignorées par ComfyUI, 63 appliquées |
+| [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1) | klein base | testée avec un prompt générique et non celui de sa fiche : produit une planche 4×4 de marche, son usage prévu, inutilisable pour un sprite seul |
+| [Pixel Art Style](https://civitai.com/models/1770073) (Civitai, déclencheur `Pixel Art style.`) | Z-Image Turbo | sujets plus détaillés et moins simplistes, grille de pixels plus fine (prompt préfixé par le déclencheur) ; double le temps de génération |
+
+Qualité (planche commune : chevalier, coffre, slime, potion, sapins, puits, magicien) :
+
+- klein distillé : très bon suivi du prompt, objets détaillés, mais des dégradés et de l'anticrénelage qu'il faudra réduire à la palette ; vue de face plus que de dessus.
+- Z-Image Turbo : le pixel art le plus franc (aplats, contours d'un pixel), le chevalier est simpliste.
+- klein base : proche du distillé, plus lent ; le slime ressemble à un virus.
+
+Modèle retenu : FLUX.2 klein 4B distillé, sans LoRA. Il est à la fois le plus rapide et le meilleur en qualité.
+
+- Z-Image Turbo est écarté : son pixel art est plus franc, mais les sujets sont nettement moins bons que ceux de klein.
+- klein base est écarté : six fois plus lent que le distillé, sans gain visible.
+- La LoRA Limbicnation est écartée : elle ajoute 3 s par génération sans effet visible.
+
+Fichiers utilisés, dans `models/` de ComfyUI :
+
+- `diffusion_models/flux-2-klein-4b-fp8.safetensors` ([black-forest-labs/FLUX.2-klein-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8))
+- `diffusion_models/flux-2-klein-base-4b-fp8.safetensors` ([black-forest-labs/FLUX.2-klein-base-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8))
+- `vae/flux2-vae.safetensors` ([Comfy-Org/Flux-2-Klein-4B](https://huggingface.co/Comfy-Org/Flux-2-Klein-4B))
+- `diffusion_models/z_image_turbo_int8_convrot.safetensors`, `text_encoders/qwen_3_4b_fp8_mixed.safetensors` et `qwen_3_4b_fp4_mixed.safetensors`, `vae/z-image-ae.safetensors` (`ae.safetensors` renommé) ([Comfy-Org/Z-Image-Turbo](https://huggingface.co/Comfy-Org/Z-Image-Turbo))
+
 ## Limites connues
 
 - Mode niveaux de gris non pris en charge.
