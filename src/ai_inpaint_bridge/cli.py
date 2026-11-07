@@ -4,20 +4,16 @@ import argparse
 import random
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
 from PIL import Image
 
-from ai_inpaint_bridge.backends import diffusion_inpaint, invert_masked
-from ai_inpaint_bridge.comfyui import (
-    DEFAULT_URL,
-    ComfyUIClient,
-    ComfyUIError,
-    InpaintSettings,
-)
+from ai_inpaint_bridge.comfyui import DEFAULT_URL, ComfyUIError, InpaintSettings
 from ai_inpaint_bridge.pixelize import MIN_PALETTE_COLORS, Color, palette_from_strip
+from ai_inpaint_bridge.tasks import DEFAULT_TASK, TASKS
+from ai_inpaint_bridge.tasks.base import Task, TaskContext
 
 BACKENDS = ("invert", "comfyui")
 MAX_SEED = 2**32 - 1
@@ -26,10 +22,10 @@ MAX_VARIANTS = 8
 
 @dataclass(frozen=True)
 class BridgeRequest:
-    """Files and settings exchanged with Aseprite for one inpainting run."""
+    """Task, files and settings exchanged with Aseprite for one run."""
 
-    source: Path
-    mask: Path
+    task: Task
+    args: argparse.Namespace
     output: Path
     backend: str
     settings: InpaintSettings
@@ -37,16 +33,23 @@ class BridgeRequest:
     palette: Path | None = None
 
 
-def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
-    """Parse the command line into a bridge request."""
+def _add_task_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--task", choices=sorted(TASKS), default=DEFAULT_TASK)
+
+
+def _selected_task(argv: Sequence[str] | None) -> Task:
+    parser = argparse.ArgumentParser(prog="ai-inpaint-bridge", add_help=False)
+    _add_task_argument(parser)
+    known, _ = parser.parse_known_args(argv)
+    return TASKS[known.task]
+
+
+def build_parser(task: Task) -> argparse.ArgumentParser:
+    """Options shared by every task, followed by the ones of the given task."""
     parser = argparse.ArgumentParser(
-        prog="ai-inpaint-bridge",
-        description="Rewrite the masked area of a sprite region.",
+        prog="ai-inpaint-bridge", description=task.description
     )
-    parser.add_argument("--input", type=Path, required=True, help="region PNG")
-    parser.add_argument(
-        "--mask", type=Path, required=True, help="mask PNG, white = rewrite"
-    )
+    _add_task_argument(parser)
     parser.add_argument(
         "--output",
         type=Path,
@@ -54,11 +57,8 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
         help="result PNG name, variant i is written as <stem>-<i><suffix>",
     )
     parser.add_argument("--backend", choices=BACKENDS, default="invert")
-    parser.add_argument("--prompt", default="", help="what to draw in the selection")
+    parser.add_argument("--prompt", default="", help="what to draw")
     parser.add_argument("--seed", type=int, help="random when omitted")
-    parser.add_argument(
-        "--denoise", type=float, default=0.8, help="0 keeps the pixels, 1 redraws"
-    )
     parser.add_argument(
         "--variants",
         type=int,
@@ -71,17 +71,24 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
     parser.add_argument(
         "--palette", type=Path, help="PNG strip of the colors to snap to"
     )
-    args = parser.parse_args(argv)
+    task.add_arguments(parser)
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
+    """Parse the command line into a bridge request."""
+    task = _selected_task(argv)
+    args = build_parser(task).parse_args(argv)
     seed: int = args.seed if args.seed is not None else random.randint(0, MAX_SEED)
     return BridgeRequest(
-        source=args.input,
-        mask=args.mask,
+        task=task,
+        args=args,
         output=args.output,
         backend=args.backend,
-        settings=InpaintSettings(
+        settings=replace(
+            task.model.settings,
             prompt=args.prompt,
             seed=seed,
-            denoise=args.denoise,
             batch_size=args.variants,
         ),
         comfyui_url=args.comfyui_url,
@@ -108,14 +115,15 @@ def variant_path(output: Path, index: int) -> Path:
 
 
 def run(request: BridgeRequest) -> None:
-    """Compute the result images and write them next to the inputs."""
-    palette = load_palette(request.palette)
-    with Image.open(request.source) as source, Image.open(request.mask) as mask:
-        if request.backend == "comfyui":
-            client = ComfyUIClient(request.comfyui_url)
-            results = diffusion_inpaint(source, mask, request.settings, client, palette)
-        else:
-            results = [invert_masked(source, mask)] * request.settings.batch_size
+    """Run the task and write its result images next to the inputs."""
+    context = TaskContext(
+        backend=request.backend,
+        model=request.task.model,
+        settings=request.settings,
+        comfyui_url=request.comfyui_url,
+        palette=load_palette(request.palette),
+    )
+    results = request.task.run(request.args, context)
     for index, result in enumerate(results, start=1):
         result.save(variant_path(request.output, index))
 

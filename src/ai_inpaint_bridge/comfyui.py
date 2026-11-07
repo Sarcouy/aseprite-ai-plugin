@@ -2,6 +2,7 @@
 
 import io
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +48,9 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
     batch_size: int = 1
     inpaint_model: str = DEFAULT_INPAINT_MODEL
     mask_grow: int = 2
+
+
+WorkflowBuilder = Callable[[str, str, InpaintSettings], Workflow]
 
 
 def positive_prompt(settings: InpaintSettings) -> str:
@@ -172,8 +176,11 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
         session: requests.Session | None = None,
         timeout: float = 600.0,
         poll_interval: float = 0.5,
+        *,
+        build_workflow: WorkflowBuilder = build_inpaint_workflow,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._build_workflow = build_workflow
         self._session = session or requests.Session()
         self._timeout = timeout
         self._poll_interval = poll_interval
@@ -181,10 +188,10 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
     def generate(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
     ) -> list[Image.Image]:
-        """Run the inpainting workflow and return the decoded images in batch order."""
+        """Run the workflow and return the decoded images in batch order."""
         image_name = self._upload(image, "aseprite-ai-inpaint-input.png")
         mask_name = self._upload(mask, "aseprite-ai-inpaint-mask.png")
-        prompt_id = self._queue(build_inpaint_workflow(image_name, mask_name, settings))
+        prompt_id = self._queue(self._build_workflow(image_name, mask_name, settings))
         return self._download_all(self._wait(prompt_id))
 
     def _upload(self, image: Image.Image, name: str) -> str:

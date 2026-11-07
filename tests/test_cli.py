@@ -6,7 +6,8 @@ from PIL import Image
 
 import pytest
 
-from ai_inpaint_bridge.cli import load_palette, main, variant_path
+from ai_inpaint_bridge.cli import load_palette, main, parse_args, variant_path
+from ai_inpaint_bridge.tasks import TASKS
 
 RED = (200, 10, 30, 255)
 INVERTED_RED = (55, 245, 225, 255)
@@ -91,3 +92,25 @@ def test_rejects_variants_out_of_range(tmp_path: Path, variants: str) -> None:
     """The variant count is bounded to keep Aseprite's wait reasonable."""
     with pytest.raises(SystemExit):
         main([*write_inputs(tmp_path), "--variants", variants])
+
+
+def test_inpaint_is_the_default_task(tmp_path: Path) -> None:
+    """Without --task the bridge inpaints, as the extension expects."""
+    request = parse_args(write_inputs(tmp_path))
+
+    assert request.task is TASKS["inpaint"]
+    assert main([*write_inputs(tmp_path), "--task", "inpaint"]) == 0
+    with Image.open(tmp_path / "output-1.png") as output:
+        assert output.getpixel((1, 1)) == INVERTED_RED
+
+
+def test_rejects_unknown_task(tmp_path: Path) -> None:
+    """Only registered tasks can be run."""
+    with pytest.raises(SystemExit):
+        main([*write_inputs(tmp_path), "--task", "teleport"])
+
+
+def test_task_arguments_are_required(tmp_path: Path) -> None:
+    """The inpaint task needs its region and mask."""
+    with pytest.raises(SystemExit):
+        main(["--output", str(tmp_path / "output.png")])
