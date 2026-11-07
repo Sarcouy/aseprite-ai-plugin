@@ -6,6 +6,9 @@ import pytest
 
 from ai_inpaint_bridge.comfyui import OUTPUT_NODE
 from ai_inpaint_bridge.klein import (
+    KLEIN_4B_BASE,
+    KLEIN_BASE_UNET,
+    KLEIN_UNET,
     KLEIN_SETTINGS,
     build_klein_inpaint_workflow,
     build_klein_text_workflow,
@@ -87,3 +90,32 @@ def test_text_workflow_starts_from_an_empty_latent() -> None:
     assert workflow["18"]["inputs"]["positive"] == ["4", 0]
     assert workflow["4"]["inputs"]["text"] == "pixel art, a knight"
     assert not {"5", "6", "20", "22"} & set(workflow)
+
+
+def test_lora_and_base_model_reach_the_graph() -> None:
+    """klein base samples with a real negative; a LoRA patches the model only."""
+    settings = replace(
+        KLEIN_4B_BASE.settings, lora="walk.safetensors", lora_strength=0.8
+    )
+
+    workflow = build_klein_text_workflow(settings, 512, 512)
+
+    assert workflow["1"]["inputs"]["unet_name"] == KLEIN_BASE_UNET
+    assert workflow["23"]["inputs"] == {
+        "model": ["1", 0],
+        "lora_name": "walk.safetensors",
+        "strength_model": 0.8,
+    }
+    assert workflow["18"]["inputs"]["model"] == ["23", 0]
+    assert workflow["18"]["inputs"]["cfg"] == 5.0
+    assert workflow["13"]["class_type"] == "CLIPTextEncode"
+    assert workflow["15"]["inputs"]["steps"] == 20
+
+
+def test_distilled_model_has_no_lora_by_default() -> None:
+    """The default graph keeps the zeroed negative and the bare model."""
+    workflow = build_klein_text_workflow(KLEIN_SETTINGS, 512, 512)
+
+    assert "23" not in workflow
+    assert workflow["1"]["inputs"]["unet_name"] == KLEIN_UNET
+    assert workflow["13"]["class_type"] == "ConditioningZeroOut"

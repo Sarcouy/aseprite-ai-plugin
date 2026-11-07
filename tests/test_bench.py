@@ -195,7 +195,7 @@ def test_sheet_mixes_inpaint_sprite_tile_and_walk_rows() -> None:
 
     kinds = {case.name for case in SPRITE_CASES if case.tile}
     assert kinds == {"grass-tile", "wall-tile"}
-    assert any(case.size == (64, 64) for case in SPRITE_CASES)
+    assert any(case.size == (128, 128) for case in SPRITE_CASES)
     assert sheet.height >= len(SPRITE_CASES) * CELL
     assert all(
         row.variants[0].size == row.case.size for row in rows if row.original is None

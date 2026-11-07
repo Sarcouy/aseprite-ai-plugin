@@ -27,8 +27,11 @@ from ai_inpaint_bridge.comfyui import (
     InpaintSettings,
     ModelProfile,
 )
+from ai_inpaint_bridge.klein import KLEIN_4B_BASE
 from ai_inpaint_bridge.pixelize import Color
 from ai_inpaint_bridge.tasks import TASKS
+
+BENCH_MODELS: tuple[ModelProfile, ...] = (*TASKS["inpaint"].models, KLEIN_4B_BASE)
 
 DB32_PATH = Path(
     "/usr/local/share/aseprite/data/extensions/dawnbringer-palettes/db32.gpl"
@@ -146,8 +149,10 @@ BENCH_CASES: tuple[BenchCase, ...] = (
 
 KNIGHT = "top-down view, a knight character with a blue cape"
 WALK = (
-    "sprite sheet of a walking animation, 4 rows facing down, left, right and up, "
-    "4 frames per row, top-down view, a knight character with a blue cape"
+    "A pixel art spritesheet of a knight character with a blue cape. The spritesheet "
+    "is a 4 by 4 grid of four rows of frames: the first row walks facing down, the "
+    "second row walks facing left, the third row walks facing right, the fourth row "
+    "walks facing up."
 )
 SPRITE_CASES: tuple[SpriteCase, ...] = (
     SpriteCase("knight-16", KNIGHT, (16, 16)),
@@ -166,7 +171,7 @@ SPRITE_CASES: tuple[SpriteCase, ...] = (
         transparent=False,
         tile=True,
     ),
-    SpriteCase("knight-walk", WALK, (64, 64)),
+    SpriteCase("knight-walk", WALK, (128, 128)),
 )
 ALL_CASES: tuple[Case, ...] = (*BENCH_CASES, *SPRITE_CASES)
 
@@ -295,7 +300,6 @@ def _strength(text: str) -> float:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    task = TASKS["inpaint"]
     parser = argparse.ArgumentParser(
         prog="ai-inpaint-bench", description="Render the quality comparison sheet."
     )
@@ -303,8 +307,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--palette", type=Path, default=DB32_PATH, help="GIMP palette")
     parser.add_argument(
         "--model",
-        choices=[profile.name for profile in task.models],
-        default=task.model().name,
+        choices=[profile.name for profile in BENCH_MODELS],
+        default=BENCH_MODELS[0].name,
         help="base model, its settings are used unless overridden below",
     )
     parser.add_argument("--variants", type=int, default=4)
@@ -319,6 +323,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--sampler")
     parser.add_argument("--scheduler")
     parser.add_argument("--mask-grow", type=int)
+    parser.add_argument(
+        "--lora", help='LoRA file, "" for none, the model one when omitted'
+    )
     parser.add_argument("--lora-strength", type=float)
     parser.add_argument(
         "--background-hint",
@@ -346,6 +353,7 @@ OVERRIDABLE = (
     "sampler",
     "scheduler",
     "mask_grow",
+    "lora",
     "lora_strength",
     "background_hint",
     "inpaint_model",
@@ -370,7 +378,7 @@ def bench_settings(args: argparse.Namespace, model: ModelProfile) -> InpaintSett
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every case on ComfyUI and save the sheet."""
     args = _parse_args(argv)
-    model = TASKS["inpaint"].model(args.model)
+    model = next(profile for profile in BENCH_MODELS if profile.name == args.model)
     settings = bench_settings(args, model)
     cases = [c for c in ALL_CASES if not args.cases or c.name in args.cases]
     start = time.monotonic()
@@ -380,7 +388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{model.name}  seed {settings.seed}  steps {settings.steps}  "
         f"cfg {settings.cfg}  {settings.sampler}/{settings.scheduler}  "
         f"unet {settings.inpaint_model or '-'}  "
-        f"lora {settings.lora_strength}  hint {settings.background_hint}  "
+        f"lora {settings.lora or '-'} {settings.lora_strength}  hint {settings.background_hint}  "
         f"grow {settings.mask_grow}  denoise {args.denoise or 'per case'}  "
         f"{time.monotonic() - start:.0f} s"
     )

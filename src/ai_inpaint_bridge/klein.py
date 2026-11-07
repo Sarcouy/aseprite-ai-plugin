@@ -1,5 +1,6 @@
-"""Graphs of FLUX.2 klein 4B distilled: inpainting and text to image."""
+"""Graphs of FLUX.2 klein 4B (distilled and base): inpainting and text to image."""
 
+from dataclasses import replace
 from typing import Any
 
 from ai_inpaint_bridge.comfyui import (
@@ -11,6 +12,7 @@ from ai_inpaint_bridge.comfyui import (
 )
 
 KLEIN_UNET = "flux-2-klein-4b-fp8.safetensors"
+KLEIN_BASE_UNET = "flux-2-klein-base-4b-fp8.safetensors"
 KLEIN_TEXT_ENCODER = "qwen_3_4b_fp8_mixed.safetensors"
 KLEIN_VAE = "flux2-vae.safetensors"
 PROMPT_PREFIX = "pixel art"
@@ -21,7 +23,7 @@ KLEIN_SETTINGS = InpaintSettings(
     cfg=1.0,
     sampler="euler",
     negative_prompt="",
-    checkpoint="",
+    checkpoint=KLEIN_UNET,
     lora="",
     inpaint_model="",
 )
@@ -56,11 +58,39 @@ def _klein_nodes(
     schedule: dict[str, Any],
     sigmas: Link,
 ) -> Workflow:
-    """Loaders, prompt, sampler and decoder shared by both graphs."""
+    """Loaders, prompt, sampler and decoder shared by both graphs.
+
+    settings.checkpoint is the diffusion model file. With a CFG of 1 the
+    negative is the zeroed prompt, otherwise the empty prompt. settings.lora,
+    when given, is applied to the model only.
+    """
+    model: Link = ["1", 0]
+    extra: Workflow = {}
+    if settings.lora:
+        extra["23"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": model,
+                "lora_name": settings.lora,
+                "strength_model": settings.lora_strength,
+            },
+        }
+        model = ["23", 0]
+    if settings.cfg == 1:
+        negative: dict[str, Any] = {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": positive},
+        }
+    else:
+        negative = {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["2", 0], "text": settings.negative_prompt},
+        }
     return {
+        **extra,
         "1": {
             "class_type": "UNETLoader",
-            "inputs": {"unet_name": KLEIN_UNET, "weight_dtype": "default"},
+            "inputs": {"unet_name": settings.checkpoint, "weight_dtype": "default"},
         },
         "2": {
             "class_type": "CLIPLoader",
@@ -80,10 +110,7 @@ def _klein_nodes(
             "inputs": {"samples": ["19", 0], "vae": ["3", 0]},
         },
         OUTPUT_NODE: {"class_type": "PreviewImage", "inputs": {"images": ["10", 0]}},
-        "13": {
-            "class_type": "ConditioningZeroOut",
-            "inputs": {"conditioning": positive},
-        },
+        "13": negative,
         "14": {
             "class_type": "KSamplerSelect",
             "inputs": {"sampler_name": settings.sampler},
@@ -93,7 +120,7 @@ def _klein_nodes(
         "18": {
             "class_type": "CFGGuider",
             "inputs": {
-                "model": ["1", 0],
+                "model": model,
                 "positive": positive,
                 "negative": ["13", 0],
                 "cfg": settings.cfg,
@@ -180,6 +207,13 @@ def build_klein_text_workflow(
 KLEIN_4B = ModelProfile(
     name="klein-4b",
     settings=KLEIN_SETTINGS,
+    build_inpaint=build_klein_inpaint_workflow,
+    build_text=build_klein_text_workflow,
+)
+
+KLEIN_4B_BASE = ModelProfile(
+    name="klein-4b-base",
+    settings=replace(KLEIN_SETTINGS, checkpoint=KLEIN_BASE_UNET, steps=20, cfg=5.0),
     build_inpaint=build_klein_inpaint_workflow,
     build_text=build_klein_text_workflow,
 )

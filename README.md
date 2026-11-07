@@ -139,11 +139,31 @@ Cas générés depuis le prompt seul, pour les futures tâches :
 |-----|--------|----------------------|
 | `knight-16`, `knight-32` | personnage vu de dessus, 16×16 et 32×32 | sur fond transparent |
 | `grass-tile`, `wall-tile` | tile d'herbe et de mur, 16×16 | répétée 3×3 pour voir les raccords |
-| `knight-walk` | planche de marche, 4 directions × 4 images de 16×16 | sur fond transparent |
+| `knight-walk` | planche de marche 128×128 : 4 directions × 4 images de 32×32, prompt rédigé comme sur la fiche de la LoRA svntax | sur fond transparent |
 
 Ces cas sont générés à 512 px puis réduits par vote majoritaire. Un sprite transparent est demandé sur une couleur clé citée dans le prompt. Le modèle ne fait que l'approcher : klein dessine « magenta » en rose plus ou moins rouge. Le fond retiré est donc la couleur médiane mesurée sur le bord de chaque image.
 
-`--model` choisit le modèle (klein par défaut) ; ses réglages s'appliquent, sauf ceux donnés en option. `--cases` limite la planche à quelques cas. Comparer deux réglages revient à comparer deux planches :
+Résultats avec klein distillé, seed 1000, 4 variantes par cas :
+
+| Cas | Résultat |
+|-----|----------|
+| `knight-32` | chevalier à cape bleue lisible sur les 4 variantes, vu de face plutôt que de dessus |
+| `knight-16` | taches de couleur, personnage à peine reconnaissable |
+| `grass-tile` | 2 variantes texturées sans couture visible, 2 unies |
+| `wall-tile` | aucune brique : 1 variante unie, 3 en bruit gris |
+
+Planche de marche (`knight-walk`, seed 1000, 4 variantes) selon le modèle et la LoRA [svntax](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), entraînée sur klein base :
+
+| Modèle | LoRA | Temps | Résultat |
+|--------|------|-------|----------|
+| klein distillé | aucune | 28 s | grilles 2×2, une seule direction |
+| klein distillé | svntax | 29 s | 2 variantes sur 4 en 4 lignes × 2 colonnes avec les 4 directions, les autres en 2×2 ; pas de cycle de marche |
+| klein base | aucune | 203 s | grilles 3×3 ou 2×3, pas de directions |
+| klein base | svntax | 221 s | 4 variantes sur 4 en 4×4 : face, gauche, droite, dos dans l'ordre demandé ; poses de marche qui varient d'une image à l'autre, sans cycle régulier ; la 4e image de chaque ligne s'écarte souvent du reste, cape bleu-gris plutôt que bleue |
+
+Seul klein base avec la LoRA svntax produit une planche de marche exploitable, à reprendre à la main pour le cycle. C'est le meilleur candidat pour une future tâche de planche de marche, au prix de 221 s pour 4 variantes, environ 67 s pour une seule (voir le tableau des modèles).
+
+`--model` choisit le modèle : ceux de la retouche (klein distillé par défaut, `sd15-inpaint`) et `klein-4b-base`, réservé au banc (20 étapes, CFG 5, prompt négatif vide). Ses réglages s'appliquent, sauf ceux donnés en option. `--lora` ajoute une LoRA (fichier de `models/loras/` de ComfyUI), avec la force `--lora-strength` ; avec klein, elle ne s'applique qu'au modèle de diffusion. `--cases` limite la planche à quelques cas. Comparer deux réglages revient à comparer deux planches :
 
 ```bash
 poetry run ai-inpaint-bench --output bench.png
@@ -191,7 +211,7 @@ LoRA testées :
 | LoRA | Modèle | Effet |
 |------|--------|-------|
 | [Limbicnation/pixel-art-lora](https://huggingface.co/Limbicnation/pixel-art-lora) | klein distillé | presque aucun effet à même prompt et même seed (contours un peu plus nets) ; 6 clés de modulation ignorées par ComfyUI, 63 appliquées |
-| [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1) | klein base | testée avec un prompt générique et non celui de sa fiche : produit une planche 4×4 de marche, son usage prévu, inutilisable pour un sprite seul |
+| [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1) | klein base | produit une planche 4×4 de marche, son usage prévu, inutilisable pour un sprite seul ; avec le prompt de sa fiche, planche exploitable (voir le banc) |
 | [Pixel Art Style](https://civitai.com/models/1770073) (Civitai, déclencheur `Pixel Art style.`) | Z-Image Turbo | sujets plus détaillés et moins simplistes, grille de pixels plus fine (prompt préfixé par le déclencheur) ; double le temps de génération |
 
 Qualité (planche commune : chevalier, coffre, slime, potion, sapins, puits, magicien) :
@@ -203,7 +223,7 @@ Qualité (planche commune : chevalier, coffre, slime, potion, sapins, puits, mag
 Modèle retenu : FLUX.2 klein 4B distillé, sans LoRA. Il est à la fois le plus rapide et le meilleur en qualité.
 
 - Z-Image Turbo est écarté : son pixel art est plus franc, mais les sujets sont nettement moins bons que ceux de klein.
-- klein base est écarté : six fois plus lent que le distillé, sans gain visible.
+- klein base est écarté pour la retouche : six fois plus lent que le distillé, sans gain visible. Il reste dans le banc, seul modèle à tirer parti de la LoRA svntax pour les planches de marche.
 - La LoRA Limbicnation est écartée : elle ajoute 3 s par génération sans effet visible.
 
 Fichiers utilisés, dans `models/` de ComfyUI :
@@ -212,6 +232,7 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - `diffusion_models/flux-2-klein-base-4b-fp8.safetensors` ([black-forest-labs/FLUX.2-klein-base-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8))
 - `vae/flux2-vae.safetensors` ([Comfy-Org/Flux-2-Klein-4B](https://huggingface.co/Comfy-Org/Flux-2-Klein-4B))
 - `diffusion_models/z_image_turbo_int8_convrot.safetensors`, `text_encoders/qwen_3_4b_fp8_mixed.safetensors` et `qwen_3_4b_fp4_mixed.safetensors`, `vae/z-image-ae.safetensors` (`ae.safetensors` renommé) ([Comfy-Org/Z-Image-Turbo](https://huggingface.co/Comfy-Org/Z-Image-Turbo))
+- `loras/klein4b-base-pixel-4walk-svntax.safetensors` (LoRA de [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), renommée)
 
 ## Limites connues
 

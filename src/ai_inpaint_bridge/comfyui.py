@@ -66,8 +66,9 @@ def load_image_nodes(image_name: str, mask_name: str) -> Workflow:
 
 
 def positive_prompt(settings: InpaintSettings) -> str:
-    """LoRA trigger, user prompt and background hint, skipping empty parts."""
-    parts = [LORA_TRIGGER, settings.prompt]
+    """Trigger of the default LoRA, user prompt and background hint, skipping empty parts."""
+    trigger = LORA_TRIGGER if settings.lora == DEFAULT_LORA else ""
+    parts = [trigger, settings.prompt]
     if settings.background and settings.background_hint:
         parts.append(f"plain {settings.background} background")
     return ", ".join(part for part in parts if part)

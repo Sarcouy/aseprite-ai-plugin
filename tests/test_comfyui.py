@@ -143,3 +143,12 @@ def test_sd15_text_workflow_uses_the_checkpoint() -> None:
     assert workflow["9"]["inputs"]["denoise"] == 1.0
     assert workflow["3"]["inputs"]["text"] == f"{LORA_TRIGGER}, a knight"
     assert INPAINT_UNET_NODE not in workflow and "5" not in workflow
+
+
+def test_trigger_word_only_comes_with_the_default_lora() -> None:
+    """Another LoRA, or none, does not get the PixelArtRedmond trigger."""
+    other = InpaintSettings("a chest", 1, lora="other.safetensors")
+
+    workflow = build_inpaint_workflow("in.png", "mask.png", other)
+
+    assert workflow["3"]["inputs"]["text"] == "a chest"
