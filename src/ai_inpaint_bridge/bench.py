@@ -15,6 +15,8 @@ from ai_inpaint_bridge.backends import (
 )
 from ai_inpaint_bridge.comfyui import DEFAULT_URL, ComfyUIClient, InpaintSettings
 from ai_inpaint_bridge.pixelize import Color
+from ai_inpaint_bridge.tasks import TASKS
+from ai_inpaint_bridge.tasks.base import ModelProfile
 
 DB32_PATH = Path(
     "/usr/local/share/aseprite/data/extensions/dawnbringer-palettes/db32.gpl"
@@ -191,29 +193,35 @@ def render_sheet(rows: Sequence[BenchRow], title: str) -> Image.Image:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    defaults = InpaintSettings(prompt="", seed=0)
+    task = TASKS["inpaint"]
     parser = argparse.ArgumentParser(
         prog="ai-inpaint-bench", description="Render the quality comparison sheet."
     )
     parser.add_argument("--output", type=Path, required=True, help="sheet PNG")
     parser.add_argument("--palette", type=Path, default=DB32_PATH, help="GIMP palette")
+    parser.add_argument(
+        "--model",
+        choices=[profile.name for profile in task.models],
+        default=task.model().name,
+        help="base model, its settings are used unless overridden below",
+    )
     parser.add_argument("--variants", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1000)
-    parser.add_argument("--steps", type=int, default=defaults.steps)
-    parser.add_argument("--cfg", type=float, default=defaults.cfg)
-    parser.add_argument("--sampler", default=defaults.sampler)
-    parser.add_argument("--scheduler", default=defaults.scheduler)
-    parser.add_argument("--mask-grow", type=int, default=defaults.mask_grow)
-    parser.add_argument("--lora-strength", type=float, default=defaults.lora_strength)
+    parser.add_argument("--steps", type=int)
+    parser.add_argument("--cfg", type=float)
+    parser.add_argument("--sampler")
+    parser.add_argument("--scheduler")
+    parser.add_argument("--mask-grow", type=int)
+    parser.add_argument("--lora-strength", type=float)
     parser.add_argument(
         "--background-hint",
         action="store_true",
+        default=None,
         help="name the key color in the prompt",
     )
     parser.add_argument(
         "--inpaint-model",
-        default=defaults.inpaint_model,
-        help='diffusion_models UNet, "" to use the checkpoint one',
+        help='diffusion_models UNet of SD 1.5, "" to use the checkpoint one',
     )
     parser.add_argument(
         "--cases",
@@ -225,31 +233,46 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+OVERRIDABLE = (
+    "steps",
+    "cfg",
+    "sampler",
+    "scheduler",
+    "mask_grow",
+    "lora_strength",
+    "background_hint",
+    "inpaint_model",
+)
+
+
+def bench_settings(args: argparse.Namespace, model: ModelProfile) -> InpaintSettings:
+    """Settings of the model, with the options given on the command line."""
+    overrides = {
+        name: getattr(args, name)
+        for name in OVERRIDABLE
+        if getattr(args, name) is not None
+    }
+    return replace(
+        model.settings,
+        seed=args.seed,
+        batch_size=args.variants,
+        **overrides,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run every case on ComfyUI and save the sheet."""
     args = _parse_args(argv)
-    settings = InpaintSettings(
-        prompt="",
-        seed=args.seed,
-        steps=args.steps,
-        cfg=args.cfg,
-        sampler=args.sampler,
-        scheduler=args.scheduler,
-        batch_size=args.variants,
-        inpaint_model=args.inpaint_model,
-        lora_strength=args.lora_strength,
-        background_hint=args.background_hint,
-        mask_grow=args.mask_grow,
-    )
+    model = TASKS["inpaint"].model(args.model)
+    settings = bench_settings(args, model)
     cases = [c for c in BENCH_CASES if not args.cases or c.name in args.cases]
     start = time.monotonic()
-    rows = run_bench(
-        cases, settings, ComfyUIClient(args.comfyui_url), load_gpl(args.palette)
-    )
+    client = ComfyUIClient(args.comfyui_url, build_workflow=model.build_workflow)
+    rows = run_bench(cases, settings, client, load_gpl(args.palette))
     title = (
-        f"seed {settings.seed}  steps {settings.steps}  cfg {settings.cfg}  "
-        f"{settings.sampler}/{settings.scheduler}  "
-        f"unet {settings.inpaint_model or 'checkpoint'}  "
+        f"{model.name}  seed {settings.seed}  steps {settings.steps}  "
+        f"cfg {settings.cfg}  {settings.sampler}/{settings.scheduler}  "
+        f"unet {settings.inpaint_model or '-'}  "
         f"lora {settings.lora_strength}  hint {settings.background_hint}  "
         f"grow {settings.mask_grow}  "
         f"{time.monotonic() - start:.0f} s"

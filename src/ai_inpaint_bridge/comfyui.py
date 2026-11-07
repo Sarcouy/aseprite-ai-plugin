@@ -53,6 +53,17 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
 WorkflowBuilder = Callable[[str, str, InpaintSettings], Workflow]
 
 
+def load_image_nodes(image_name: str, mask_name: str) -> Workflow:
+    """Nodes 5 (uploaded image) and 6 (its mask, white = rewrite)."""
+    return {
+        "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "6": {
+            "class_type": "LoadImageMask",
+            "inputs": {"image": mask_name, "channel": "red"},
+        },
+    }
+
+
 def positive_prompt(settings: InpaintSettings) -> str:
     """LoRA trigger, user prompt and background hint, skipping empty parts."""
     parts = [LORA_TRIGGER, settings.prompt]
@@ -93,11 +104,7 @@ def build_inpaint_workflow(
             "class_type": "CLIPTextEncode",
             "inputs": {"text": settings.negative_prompt, "clip": ["2", 1]},
         },
-        "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
-        "6": {
-            "class_type": "LoadImageMask",
-            "inputs": {"image": mask_name, "channel": "red"},
-        },
+        **load_image_nodes(image_name, mask_name),
         "7": {
             "class_type": "VAEEncode",
             "inputs": {"pixels": ["5", 0], "vae": ["1", 2]},

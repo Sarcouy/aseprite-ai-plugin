@@ -32,10 +32,22 @@ class TaskContext:
 
 @dataclass(frozen=True)
 class Task:
-    """One command of the extension, run by the bridge with --task <name>."""
+    """One command of the extension, run by the bridge with --task <name>.
+
+    The first model is the default one, the others are chosen with --model.
+    """
 
     name: str
     description: str
-    model: ModelProfile
+    models: tuple[ModelProfile, ...]
     add_arguments: Callable[[argparse.ArgumentParser], None]
     run: Callable[[argparse.Namespace, TaskContext], list[Image.Image]]
+
+    def model(self, name: str | None = None) -> ModelProfile:
+        """The model with this name, the default one when no name is given."""
+        if name is None:
+            return self.models[0]
+        for profile in self.models:
+            if profile.name == name:
+                return profile
+        raise ValueError(f"task {self.name} has no model {name}")

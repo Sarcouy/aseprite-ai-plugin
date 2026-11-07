@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 from PIL import Image
 
-from ai_inpaint_bridge.comfyui import DEFAULT_URL, ComfyUIError, InpaintSettings
+from ai_inpaint_bridge.comfyui import DEFAULT_URL, ComfyUIError
 from ai_inpaint_bridge.pixelize import MIN_PALETTE_COLORS, Color, palette_from_strip
 from ai_inpaint_bridge.tasks import DEFAULT_TASK, TASKS
 from ai_inpaint_bridge.tasks.base import Task, TaskContext
@@ -22,14 +22,15 @@ MAX_VARIANTS = 8
 
 @dataclass(frozen=True)
 class BridgeRequest:
-    """Task, files and settings exchanged with Aseprite for one run."""
+    """Task, files and settings exchanged with Aseprite for one run.
+
+    The palette of the context is read from the palette file when running.
+    """
 
     task: Task
     args: argparse.Namespace
     output: Path
-    backend: str
-    settings: InpaintSettings
-    comfyui_url: str
+    context: TaskContext
     palette: Path | None = None
 
 
@@ -57,6 +58,12 @@ def build_parser(task: Task) -> argparse.ArgumentParser:
         help="result PNG name, variant i is written as <stem>-<i><suffix>",
     )
     parser.add_argument("--backend", choices=BACKENDS, default="invert")
+    parser.add_argument(
+        "--model",
+        choices=[profile.name for profile in task.models],
+        default=task.model().name,
+        help="base model of the task",
+    )
     parser.add_argument("--prompt", default="", help="what to draw")
     parser.add_argument("--seed", type=int, help="random when omitted")
     parser.add_argument(
@@ -80,18 +87,23 @@ def parse_args(argv: Sequence[str] | None = None) -> BridgeRequest:
     task = _selected_task(argv)
     args = build_parser(task).parse_args(argv)
     seed: int = args.seed if args.seed is not None else random.randint(0, MAX_SEED)
+    model = task.model(args.model)
     return BridgeRequest(
         task=task,
         args=args,
         output=args.output,
-        backend=args.backend,
-        settings=replace(
-            task.model.settings,
-            prompt=args.prompt,
-            seed=seed,
-            batch_size=args.variants,
+        context=TaskContext(
+            backend=args.backend,
+            model=model,
+            settings=replace(
+                model.settings,
+                prompt=args.prompt,
+                seed=seed,
+                batch_size=args.variants,
+            ),
+            comfyui_url=args.comfyui_url,
+            palette=None,
         ),
-        comfyui_url=args.comfyui_url,
         palette=args.palette,
     )
 
@@ -116,13 +128,7 @@ def variant_path(output: Path, index: int) -> Path:
 
 def run(request: BridgeRequest) -> None:
     """Run the task and write its result images next to the inputs."""
-    context = TaskContext(
-        backend=request.backend,
-        model=request.task.model,
-        settings=request.settings,
-        comfyui_url=request.comfyui_url,
-        palette=load_palette(request.palette),
-    )
+    context = replace(request.context, palette=load_palette(request.palette))
     results = request.task.run(request.args, context)
     for index, result in enumerate(results, start=1):
         result.save(variant_path(request.output, index))
@@ -135,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run(request)
     except requests.ConnectionError:
         print(
-            f"ai-inpaint-bridge: ComfyUI is not reachable at {request.comfyui_url}, "
+            f"ai-inpaint-bridge: ComfyUI is not reachable at {request.context.comfyui_url}, "
             "start it with scripts/start-comfyui.sh",
             file=sys.stderr,
         )

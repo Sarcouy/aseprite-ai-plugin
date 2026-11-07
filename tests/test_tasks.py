@@ -9,16 +9,21 @@ from ai_inpaint_bridge.comfyui import (
     Workflow,
     build_inpaint_workflow,
 )
+from ai_inpaint_bridge.klein import build_klein_inpaint_workflow
 from ai_inpaint_bridge.tasks import DEFAULT_TASK, TASKS
 
 
-def test_inpaint_task_uses_sd15_inpainting() -> None:
-    """The default task keeps the SD 1.5 inpainting graph and settings."""
+def test_inpaint_task_defaults_to_klein() -> None:
+    """klein is the default model, SD 1.5 inpainting stays selectable."""
     task = TASKS[DEFAULT_TASK]
 
     assert task.name == "inpaint"
-    assert task.model.build_workflow is build_inpaint_workflow
-    assert task.model.settings == InpaintSettings(prompt="", seed=0)
+    assert task.model().build_workflow is build_klein_inpaint_workflow
+    sd15 = task.model("sd15-inpaint")
+    assert sd15.build_workflow is build_inpaint_workflow
+    assert sd15.settings == InpaintSettings(prompt="", seed=0)
+    with pytest.raises(ValueError):
+        task.model("sdxl")
 
 
 def test_client_queues_the_injected_workflow(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,6 +2,7 @@ local DEFAULT_PREFERENCES = {
   bridge_command = "ai-inpaint-bridge",
   margin = 8,
   backend = "comfyui",
+  inpaint_model = "klein-4b",
   prompt = "",
   denoise = 80,
   use_palette = true,
@@ -10,6 +11,8 @@ local DEFAULT_PREFERENCES = {
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local BACKENDS = { "comfyui", "invert" }
+-- Models of the bridge's inpaint task, the first one is its default.
+local INPAINT_MODELS = { "klein-4b", "sd15-inpaint" }
 local MAX_ALERT_LINES = 15
 local MAX_VARIANTS = 8
 local PREVIEW_COLUMNS = 4
@@ -50,6 +53,8 @@ local function show_settings(plugin)
   local prefs = preferences(plugin)
   local dlg = Dialog("AI Settings")
   dlg:combobox{ id = "backend", label = "Backend", option = prefs.backend, options = BACKENDS }
+  dlg:combobox{ id = "inpaint_model", label = "Inpaint model", option = prefs.inpaint_model,
+                options = INPAINT_MODELS }
   dlg:entry{ id = "bridge_command", label = "Bridge command", text = prefs.bridge_command }
   dlg:number{ id = "margin", label = "Context margin (px)",
               text = tostring(prefs.margin), decimals = 0 }
@@ -58,6 +63,7 @@ local function show_settings(plugin)
   dlg:show()
   if dlg.data.ok then
     prefs.backend = dlg.data.backend
+    prefs.inpaint_model = dlg.data.inpaint_model
     prefs.bridge_command = dlg.data.bridge_command
     prefs.margin = math.max(0, math.floor(dlg.data.margin))
   end
@@ -92,6 +98,7 @@ local function run_options(prefs)
     bridge_command = prefs.bridge_command,
     margin = prefs.margin,
     backend = prefs.backend,
+    model = prefs.inpaint_model,
     prompt = prefs.prompt,
     denoise = prefs.denoise / 100,
     use_palette = prefs.use_palette,

@@ -4,12 +4,12 @@ Extension Aseprite qui réécrit la zone sélectionnée d'un sprite avec un mod�
 
 ## État
 
-Itération 5 : UNet spécialisé inpainting, masque élargi côté modèle, réglages choisis sur un banc d'évaluation, variantes ratées signalées dans la fenêtre de choix.
+Itération 6 : tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle de retouche par défaut, SD 1.5 inpainting en repli.
 
 ```mermaid
 flowchart LR
     A["Aseprite<br/>extension Lua"] -->|"région + masque (PNG)"| B["ai-inpaint-bridge<br/>(Python)"]
-    B -->|"image agrandie ×k + masque"| C["ComfyUI<br/>SD 1.5 inpainting + PixelArtRedmond"]
+    B -->|"image agrandie ×k + masque"| C["ComfyUI<br/>FLUX.2 klein 4B<br/>ou SD 1.5 inpainting"]
     C --> B
     B -->|"N résultats réduits (PNG)"| A
     A --> E["Fenêtre de choix<br/>des variantes"]
@@ -24,13 +24,30 @@ Traitement dans le pont :
 4. Le résultat est ramené à la palette du sprite (ou à une palette adaptative de 16 couleurs si l'option est décochée ou si la palette n'a qu'une couleur), les pixels proches de la couleur clé redeviennent transparents.
 5. Chaque bloc agrandi est réduit à un pixel par vote majoritaire.
 
-ComfyUI utilise l'UNet de `sd-v1-5-inpainting` (nœuds `UNETLoader` et `InpaintModelConditioning`) avec le CLIP et le VAE du checkpoint SD 1.5, la LoRA PixelArtRedmond et une CFG de 10.
+### Modèle de la retouche
 
-Le pont exécute une tâche choisie avec `--task` : seule `inpaint` (la retouche, tâche par défaut) existe pour l'instant. Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches.
+Par défaut, la retouche utilise FLUX.2 klein 4B distillé (`--model klein-4b`, ou **Inpaint model** dans **Edit > AI > Settings...**) :
+
+- le latent de l'image reçoit un masque de bruit (`SetLatentNoiseMask`) et l'image d'origine est donnée en référence au prompt (`ReferenceLatent`) ;
+- 4 étapes, CFG 1, `euler`, prompt préfixé par `pixel art` (sans le déclencheur de la LoRA de SD 1.5) ;
+- une force de modification inférieure à 100 % échantillonne les 4 dernières étapes d'un planning de 4 / force étapes ; une force nulle est refusée.
+
+Pourquoi klein (planches et détail dans le [compte rendu de l'issue 6](https://github.com/Sarcouy/aseprite-ai-plugin/issues/6#issuecomment-6632860704)) :
+
+- il suit mieux le prompt : la fiole, le slime, le sapin et l'épée du banc sont meilleurs qu'avec SD 1.5 ;
+- le coffre reste meilleur avec SD 1.5 : klein remplit toute la sélection avec un sujet trop détaillé pour 16 px ;
+- il est deux fois plus lent : environ 41 s pour 4 variantes, contre 21,5 s ;
+- la génération reste à 512 px pour privilégier la qualité ; à 256 px, 4 variantes prennent 18 s.
+
+SD 1.5 (`--model sd15-inpaint`) reste disponible en repli : UNet de `sd-v1-5-inpainting` (nœuds `UNETLoader` et `InpaintModelConditioning`) avec le CLIP et le VAE du checkpoint SD 1.5, la LoRA PixelArtRedmond et une CFG de 10.
+
+### Tâches
+
+Le pont exécute une tâche choisie avec `--task` : seule `inpaint` (la retouche, tâche par défaut) existe pour l'instant. Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
-Mesures sur RTX 3050 Ti 4 Go (ComfyUI en `--lowvram`, région 32×32 agrandie à 512×512) :
+Mesures avec SD 1.5 sur RTX 3050 Ti 4 Go (ComfyUI en `--lowvram`, région 32×32 agrandie à 512×512) ; avec klein, 4 variantes en batch prennent environ 41 s :
 
 | Variantes | Batch | N prompts successifs | Pic de VRAM (batch / successifs) |
 |-----------|-------|----------------------|----------------------------------|
@@ -40,7 +57,11 @@ Mesures sur RTX 3050 Ti 4 Go (ComfyUI en `--lowvram`, région 32×32 agrandie à
 ## Prérequis
 
 - Aseprite 1.3 (testé avec 1.3.18)
-- ComfyUI installé dans `~/workspace/ComfyUI` (ou `COMFYUI_DIR`) avec :
+- ComfyUI installé dans `~/workspace/ComfyUI` (ou `COMFYUI_DIR`) avec, pour klein :
+  - `models/diffusion_models/flux-2-klein-4b-fp8.safetensors` ([black-forest-labs/FLUX.2-klein-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8))
+  - `models/text_encoders/qwen_3_4b_fp8_mixed.safetensors` ([Comfy-Org/Z-Image-Turbo](https://huggingface.co/Comfy-Org/Z-Image-Turbo))
+  - `models/vae/flux2-vae.safetensors` ([Comfy-Org/Flux-2-Klein-4B](https://huggingface.co/Comfy-Org/Flux-2-Klein-4B))
+- et, pour le modèle de repli SD 1.5 :
   - `models/checkpoints/v1-5-pruned-emaonly-fp16.safetensors` ([Comfy-Org/stable-diffusion-1.5](https://huggingface.co/Comfy-Org/stable-diffusion-1.5))
   - `models/loras/PixelArtRedmond15V-PixelArt-PIXARFK.safetensors` ([artificialguybr/pixelartredmond-1-5v](https://huggingface.co/artificialguybr/pixelartredmond-1-5v-pixel-art-loras-for-sd-1-5))
   - `models/diffusion_models/sd-v1-5-inpainting-unet-fp16.safetensors` : fichier `unet/diffusion_pytorch_model.fp16.safetensors` de [stable-diffusion-v1-5/stable-diffusion-inpainting](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting), renommé (1,7 Go)
@@ -107,17 +128,17 @@ Paramètres : `backend` (`invert` ou `comfyui`), `mode` (`rgb` ou `indexed`), `v
 
 ### Banc d'évaluation
 
-`ai-inpaint-bench` génère 7 scènes fixes (potion, coffre, slime, sapin, épée, retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection) en palette DB32, avec une seed fixe, et produit une planche : une ligne par scène, la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. ComfyUI doit tourner. Comparer deux réglages revient à comparer deux planches :
+`ai-inpaint-bench` génère 7 scènes fixes (potion, coffre, slime, sapin, épée, retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection) en palette DB32, avec une seed fixe, et produit une planche : une ligne par scène, la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. ComfyUI doit tourner. `--model` choisit le modèle (klein par défaut) ; ses réglages s'appliquent, sauf ceux donnés en option. Comparer deux réglages revient à comparer deux planches :
 
 ```bash
 poetry run ai-inpaint-bench --output bench.png
 ```
 
 ```bash
-poetry run ai-inpaint-bench --inpaint-model "" --cfg 7 --mask-grow 0 --background-hint --seed 2000 --output ancien.png
+poetry run ai-inpaint-bench --model sd15-inpaint --inpaint-model "" --cfg 7 --mask-grow 0 --background-hint --seed 2000 --output ancien.png
 ```
 
-Résultats des essais (seeds 1000 et 2000, 4 variantes par scène) :
+Résultats des essais avec SD 1.5 (seeds 1000 et 2000, 4 variantes par scène) :
 
 | Réglage | Effet |
 |---------|-------|
@@ -130,7 +151,7 @@ Résultats des essais (seeds 1000 et 2000, 4 variantes par scène) :
 
 ### Modèles récents sur 4 Go de VRAM
 
-Mesures de génération texte vers image à 512×512 sur RTX 3050 Ti 4 Go, avec ComfyUI 0.43 en `--lowvram`. Aucun de ces modèles n'est encore branché dans le pont.
+Mesures de génération texte vers image à 512×512 sur RTX 3050 Ti 4 Go, avec ComfyUI 0.43 en `--lowvram`. Seul klein 4B distillé est branché dans le pont, pour la retouche.
 
 Conditions de mesure :
 
@@ -180,9 +201,9 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 ## Limites connues
 
 - Mode niveaux de gris non pris en charge.
-- Aseprite est figé pendant la génération (6 à 8 s par variante sur une RTX 3050 Ti 4 Go).
+- Aseprite est figé pendant la génération (environ 10 s par variante avec klein sur une RTX 3050 Ti 4 Go).
 - Le résultat varie encore d'une seed à l'autre : environ 3 variantes sur 4 sont utilisables sur le banc. La fenêtre de choix barre en rouge les variantes qui changent moins de 5 % des pixels sélectionnés.
-- La retouche d'un dessin existant (force de modification à 60 %) suit mal le prompt : « mossy rock » n'a jamais ajouté de mousse lors des essais.
+- La retouche d'un dessin existant (force de modification à 60 %) suit mal le prompt : sur le banc, « mossy rock » ajoute de la mousse à 0 à 2 variantes sur 4 avec klein, jamais avec SD 1.5.
 - En sortie `New layer`, le calque `AI inpaint` se superpose à l'original : un pixel rendu transparent n'efface pas ce qu'il y a dessous. Utiliser `Active layer` pour effacer.
 - Le modèle reçoit l'image aplatie de tous les calques visibles : en sortie `Active layer`, l'apparence des autres calques peut se retrouver dans le calque actif.
 - Une variante issue d'un batch ne peut pas être régénérée seule à partir de la seed.

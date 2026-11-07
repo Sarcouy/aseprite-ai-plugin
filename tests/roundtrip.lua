@@ -1,5 +1,6 @@
 -- Batch test: aseprite -b --script-param bridge=<command> [--script-param backend=comfyui]
 --             [--script-param mode=indexed] [--script-param variants=<n>]
+--             [--script-param model=sd15-inpaint]
 --             --script tests/roundtrip.lua
 
 local script_dir = app.fs.filePath(debug.getinfo(1, "S").source:sub(2))
@@ -39,6 +40,7 @@ local job, message = inpaint.generate(sprite, sprite.frames[1], {
   bridge_command = app.params.bridge,
   margin = 2,
   backend = backend,
+  model = app.params.model,
   prompt = "a blue gem",
   denoise = 1.0,
   use_palette = true,
@@ -115,4 +117,5 @@ assert(layer_pixel(3, 3) == background, "transparency on a background must becom
 base.isEditable = false
 assert(inpaint.active_layer_problem(base) ~= nil, "a locked layer must be refused")
 
-print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. variants .. " variants)")
+print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. (app.params.model or "default model")
+      .. ", " .. variants .. " variants)")

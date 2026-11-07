@@ -12,7 +12,14 @@ from ai_inpaint_bridge.comfyui import (
     InpaintSettings,
     build_inpaint_workflow,
 )
+from ai_inpaint_bridge.klein import KLEIN_SETTINGS, build_klein_inpaint_workflow
 from ai_inpaint_bridge.tasks.base import ModelProfile, Task, TaskContext
+
+KLEIN_4B = ModelProfile(
+    name="klein-4b",
+    build_workflow=build_klein_inpaint_workflow,
+    settings=KLEIN_SETTINGS,
+)
 
 SD15_INPAINT = ModelProfile(
     name="sd15-inpaint",
@@ -47,7 +54,7 @@ def run(args: argparse.Namespace, context: TaskContext) -> list[Image.Image]:
 TASK = Task(
     name="inpaint",
     description="Rewrite the masked area of a sprite region.",
-    model=SD15_INPAINT,
+    models=(KLEIN_4B, SD15_INPAINT),
     add_arguments=add_arguments,
     run=run,
 )

@@ -114,3 +114,12 @@ def test_task_arguments_are_required(tmp_path: Path) -> None:
     """The inpaint task needs its region and mask."""
     with pytest.raises(SystemExit):
         main(["--output", str(tmp_path / "output.png")])
+
+
+def test_klein_is_the_default_model(tmp_path: Path) -> None:
+    """SD 1.5 inpainting is only used when asked for."""
+    assert parse_args(write_inputs(tmp_path)).context.model.name == "klein-4b"
+    request = parse_args([*write_inputs(tmp_path), "--model", "sd15-inpaint"])
+    assert request.context.model.name == "sd15-inpaint"
+    with pytest.raises(SystemExit):
+        parse_args([*write_inputs(tmp_path), "--model", "sdxl"])

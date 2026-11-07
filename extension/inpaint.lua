@@ -99,6 +99,9 @@ local function run_bridge(options, paths)
     shell_quote(paths.input), shell_quote(paths.mask),
     shell_quote(paths.output), shell_quote(options.backend or "invert"),
     shell_quote(options.prompt or ""), denoise, #paths.variants)
+  if options.model then
+    cmd = cmd .. " --model " .. shell_quote(options.model)
+  end
   if paths.palette then
     cmd = cmd .. " --palette " .. shell_quote(paths.palette)
   end
