@@ -1,8 +1,11 @@
-"""Inpainting graph for FLUX.2 klein 4B distilled."""
+"""Graphs of FLUX.2 klein 4B distilled: inpainting and text to image."""
+
+from typing import Any
 
 from ai_inpaint_bridge.comfyui import (
     OUTPUT_NODE,
     InpaintSettings,
+    ModelProfile,
     Workflow,
     load_image_nodes,
 )
@@ -43,15 +46,17 @@ def total_steps(settings: InpaintSettings) -> int:
     return max(settings.steps, round(settings.steps / settings.denoise))
 
 
-def build_klein_inpaint_workflow(
-    image_name: str, mask_name: str, settings: InpaintSettings
-) -> Workflow:
-    """Return the API-format graph: masked sampling with the image as reference.
+Link = list[Any]
 
-    The encoded image is both the starting latent (with a noise mask) and a
-    reference latent added to the prompt conditioning.
-    """
-    total = total_steps(settings)
+
+def _klein_nodes(
+    settings: InpaintSettings,
+    positive: Link,
+    latent: Link,
+    schedule: dict[str, Any],
+    sigmas: Link,
+) -> Workflow:
+    """Loaders, prompt, sampler and decoder shared by both graphs."""
     return {
         "1": {
             "class_type": "UNETLoader",
@@ -70,6 +75,60 @@ def build_klein_inpaint_workflow(
             "class_type": "CLIPTextEncode",
             "inputs": {"clip": ["2", 0], "text": klein_prompt(settings)},
         },
+        "10": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["19", 0], "vae": ["3", 0]},
+        },
+        OUTPUT_NODE: {"class_type": "PreviewImage", "inputs": {"images": ["10", 0]}},
+        "13": {
+            "class_type": "ConditioningZeroOut",
+            "inputs": {"conditioning": positive},
+        },
+        "14": {
+            "class_type": "KSamplerSelect",
+            "inputs": {"sampler_name": settings.sampler},
+        },
+        "15": {"class_type": "Flux2Scheduler", "inputs": schedule},
+        "17": {"class_type": "RandomNoise", "inputs": {"noise_seed": settings.seed}},
+        "18": {
+            "class_type": "CFGGuider",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": positive,
+                "negative": ["13", 0],
+                "cfg": settings.cfg,
+            },
+        },
+        "19": {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["17", 0],
+                "guider": ["18", 0],
+                "sampler": ["14", 0],
+                "sigmas": sigmas,
+                "latent_image": latent,
+            },
+        },
+    }
+
+
+def build_klein_inpaint_workflow(
+    image_name: str, mask_name: str, settings: InpaintSettings
+) -> Workflow:
+    """Return the API-format graph: masked sampling with the image as reference.
+
+    The encoded image is both the starting latent (with a noise mask) and a
+    reference latent added to the prompt conditioning.
+    """
+    total = total_steps(settings)
+    return {
+        **_klein_nodes(
+            settings,
+            positive=["20", 0],
+            latent=["9", 0],
+            schedule={"steps": total, "width": ["22", 0], "height": ["22", 1]},
+            sigmas=["16", 1],
+        ),
         **load_image_nodes(image_name, mask_name),
         "7": {
             "class_type": "VAEEncode",
@@ -83,46 +142,9 @@ def build_klein_inpaint_workflow(
             "class_type": "SetLatentNoiseMask",
             "inputs": {"samples": ["8", 0], "mask": ["6", 0]},
         },
-        "10": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["19", 0], "vae": ["3", 0]},
-        },
-        OUTPUT_NODE: {"class_type": "PreviewImage", "inputs": {"images": ["10", 0]}},
-        "13": {
-            "class_type": "ConditioningZeroOut",
-            "inputs": {"conditioning": ["20", 0]},
-        },
-        "14": {
-            "class_type": "KSamplerSelect",
-            "inputs": {"sampler_name": settings.sampler},
-        },
-        "15": {
-            "class_type": "Flux2Scheduler",
-            "inputs": {"steps": total, "width": ["22", 0], "height": ["22", 1]},
-        },
         "16": {
             "class_type": "SplitSigmas",
             "inputs": {"sigmas": ["15", 0], "step": total - settings.steps},
-        },
-        "17": {"class_type": "RandomNoise", "inputs": {"noise_seed": settings.seed}},
-        "18": {
-            "class_type": "CFGGuider",
-            "inputs": {
-                "model": ["1", 0],
-                "positive": ["20", 0],
-                "negative": ["13", 0],
-                "cfg": settings.cfg,
-            },
-        },
-        "19": {
-            "class_type": "SamplerCustomAdvanced",
-            "inputs": {
-                "noise": ["17", 0],
-                "guider": ["18", 0],
-                "sampler": ["14", 0],
-                "sigmas": ["16", 1],
-                "latent_image": ["9", 0],
-            },
         },
         "20": {
             "class_type": "ReferenceLatent",
@@ -130,3 +152,34 @@ def build_klein_inpaint_workflow(
         },
         "22": {"class_type": "GetImageSize", "inputs": {"image": ["5", 0]}},
     }
+
+
+def build_klein_text_workflow(
+    settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: text to image from an empty latent."""
+    return {
+        **_klein_nodes(
+            settings,
+            positive=["4", 0],
+            latent=["7", 0],
+            schedule={"steps": settings.steps, "width": width, "height": height},
+            sigmas=["15", 0],
+        ),
+        "7": {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": settings.batch_size,
+            },
+        },
+    }
+
+
+KLEIN_4B = ModelProfile(
+    name="klein-4b",
+    settings=KLEIN_SETTINGS,
+    build_inpaint=build_klein_inpaint_workflow,
+    build_text=build_klein_text_workflow,
+)

@@ -6,17 +6,8 @@ from dataclasses import dataclass
 
 from PIL import Image
 
-from ai_inpaint_bridge.comfyui import InpaintSettings, WorkflowBuilder
+from ai_inpaint_bridge.comfyui import InpaintSettings, ModelProfile
 from ai_inpaint_bridge.pixelize import Color
-
-
-@dataclass(frozen=True)
-class ModelProfile:
-    """Base model of a task: its ComfyUI graph and its default settings."""
-
-    name: str
-    build_workflow: WorkflowBuilder
-    settings: InpaintSettings
 
 
 @dataclass(frozen=True)

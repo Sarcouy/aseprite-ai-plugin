@@ -3,6 +3,7 @@
 from PIL import Image
 
 from ai_inpaint_bridge.pixelize import (
+    border_color,
     KEY_CANDIDATES,
     opaque_colors,
     palette_from_strip,
@@ -84,3 +85,12 @@ def test_without_palette_colors_are_reduced() -> None:
 
     assert small.getpixel((0, 0)) == (*RED, 255)
     assert small.getpixel((1, 0)) == (*WHITE, 255)
+
+
+def test_border_color_is_the_median_of_the_outer_ring() -> None:
+    """A subject touching the border does not change the background estimate."""
+    image = Image.new("RGB", (10, 10), (216, 21, 107))
+    image.paste((10, 20, 30), (3, 3, 7, 7))
+    image.paste((10, 20, 30), (0, 0, 2, 2))
+
+    assert border_color(image) == (216, 21, 107)

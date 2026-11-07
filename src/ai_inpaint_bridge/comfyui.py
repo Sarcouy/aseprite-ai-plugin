@@ -1,9 +1,9 @@
-"""Inpainting through the HTTP API of a local ComfyUI server."""
+"""Generation through the HTTP API of a local ComfyUI server."""
 
 import io
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import requests
@@ -51,6 +51,7 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
 
 
 WorkflowBuilder = Callable[[str, str, InpaintSettings], Workflow]
+TextWorkflowBuilder = Callable[[InpaintSettings, int, int], Workflow]
 
 
 def load_image_nodes(image_name: str, mask_name: str) -> Workflow:
@@ -168,14 +169,60 @@ def _use_inpaint_model(workflow: Workflow, unet_name: str) -> None:
     sampler["latent_image"] = [REPEAT_NODE, 0]
 
 
+def build_sd15_text_workflow(
+    settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: text to image on the SD checkpoint with the LoRA.
+
+    The inpainting UNet is not used: it expects a masked image.
+    """
+    workflow = build_inpaint_workflow("", "", replace(settings, inpaint_model=""))
+    for node in ("5", "6", "7", "8", REPEAT_NODE):
+        del workflow[node]
+    workflow["7"] = {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+            "width": width,
+            "height": height,
+            "batch_size": settings.batch_size,
+        },
+    }
+    sampler = workflow["9"]["inputs"]
+    sampler["latent_image"] = ["7", 0]
+    sampler["denoise"] = 1.0
+    return workflow
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """Base model: its ComfyUI graphs and its default settings.
+
+    build_inpaint rewrites the masked area of an uploaded image, build_text
+    draws from the prompt alone at the given size.
+    """
+
+    name: str
+    settings: InpaintSettings
+    build_inpaint: WorkflowBuilder
+    build_text: TextWorkflowBuilder
+
+
+SD15_INPAINT = ModelProfile(
+    name="sd15-inpaint",
+    settings=InpaintSettings(prompt="", seed=0),
+    build_inpaint=build_inpaint_workflow,
+    build_text=build_sd15_text_workflow,
+)
+
+
 def _png_bytes(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
 
 
-class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the single-method InpaintGenerator protocol
-    """Minimal client for the upload, prompt, history and view endpoints."""
+class ComfyUIClient:
+    """Minimal client for the upload, prompt, history, view and cancel endpoints."""
 
     def __init__(
         self,
@@ -184,10 +231,10 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
         timeout: float = 600.0,
         poll_interval: float = 0.5,
         *,
-        build_workflow: WorkflowBuilder = build_inpaint_workflow,
+        model: ModelProfile = SD15_INPAINT,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._build_workflow = build_workflow
+        self._model = model
         self._session = session or requests.Session()
         self._timeout = timeout
         self._poll_interval = poll_interval
@@ -195,10 +242,19 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
     def generate(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
     ) -> list[Image.Image]:
-        """Run the workflow and return the decoded images in batch order."""
+        """Inpaint the masked area, return the decoded images in batch order."""
         image_name = self._upload(image, "aseprite-ai-inpaint-input.png")
         mask_name = self._upload(mask, "aseprite-ai-inpaint-mask.png")
-        prompt_id = self._queue(self._build_workflow(image_name, mask_name, settings))
+        return self._run(self._model.build_inpaint(image_name, mask_name, settings))
+
+    def generate_text(
+        self, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """Draw from the prompt alone, return the decoded images in batch order."""
+        return self._run(self._model.build_text(settings, width, height))
+
+    def _run(self, workflow: Workflow) -> list[Image.Image]:
+        prompt_id = self._queue(workflow)
         try:
             entry = self._wait(prompt_id)
         except BaseException:

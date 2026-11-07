@@ -7,25 +7,9 @@ from pathlib import Path
 from PIL import Image
 
 from ai_inpaint_bridge.backends import diffusion_inpaint, invert_masked
-from ai_inpaint_bridge.comfyui import (
-    ComfyUIClient,
-    InpaintSettings,
-    build_inpaint_workflow,
-)
-from ai_inpaint_bridge.klein import KLEIN_SETTINGS, build_klein_inpaint_workflow
-from ai_inpaint_bridge.tasks.base import ModelProfile, Task, TaskContext
-
-KLEIN_4B = ModelProfile(
-    name="klein-4b",
-    build_workflow=build_klein_inpaint_workflow,
-    settings=KLEIN_SETTINGS,
-)
-
-SD15_INPAINT = ModelProfile(
-    name="sd15-inpaint",
-    build_workflow=build_inpaint_workflow,
-    settings=InpaintSettings(prompt="", seed=0),
-)
+from ai_inpaint_bridge.comfyui import SD15_INPAINT, ComfyUIClient
+from ai_inpaint_bridge.klein import KLEIN_4B
+from ai_inpaint_bridge.tasks.base import Task, TaskContext
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -44,9 +28,7 @@ def run(args: argparse.Namespace, context: TaskContext) -> list[Image.Image]:
     settings = replace(context.settings, denoise=args.denoise)
     with Image.open(args.input) as source, Image.open(args.mask) as mask:
         if context.backend == "comfyui":
-            client = ComfyUIClient(
-                context.comfyui_url, build_workflow=context.model.build_workflow
-            )
+            client = ComfyUIClient(context.comfyui_url, model=context.model)
             return diffusion_inpaint(source, mask, settings, client, context.palette)
         return [invert_masked(source, mask)] * settings.batch_size
 

@@ -8,6 +8,7 @@ from ai_inpaint_bridge.comfyui import OUTPUT_NODE
 from ai_inpaint_bridge.klein import (
     KLEIN_SETTINGS,
     build_klein_inpaint_workflow,
+    build_klein_text_workflow,
     klein_prompt,
     total_steps,
 )
@@ -69,3 +70,20 @@ def test_workflow_uses_the_image_as_reference() -> None:
     assert workflow["16"]["inputs"]["step"] == 3
     assert workflow["19"]["inputs"]["sigmas"] == ["16", 1]
     assert workflow[OUTPUT_NODE]["inputs"]["images"] == ["10", 0]
+
+
+def test_text_workflow_starts_from_an_empty_latent() -> None:
+    """Text to image: full 4 step schedule at the requested size, no image node."""
+    settings = replace(KLEIN_SETTINGS, prompt="a knight", seed=7, batch_size=4)
+
+    workflow = build_klein_text_workflow(settings, 512, 256)
+
+    assert workflow["7"] == {
+        "class_type": "EmptyFlux2LatentImage",
+        "inputs": {"width": 512, "height": 256, "batch_size": 4},
+    }
+    assert workflow["15"]["inputs"] == {"steps": 4, "width": 512, "height": 256}
+    assert workflow["19"]["inputs"]["sigmas"] == ["15", 0]
+    assert workflow["18"]["inputs"]["positive"] == ["4", 0]
+    assert workflow["4"]["inputs"]["text"] == "pixel art, a knight"
+    assert not {"5", "6", "20", "22"} & set(workflow)

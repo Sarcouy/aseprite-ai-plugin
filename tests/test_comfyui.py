@@ -14,6 +14,7 @@ from ai_inpaint_bridge.comfyui import (
     REPEAT_NODE,
     InpaintSettings,
     build_inpaint_workflow,
+    build_sd15_text_workflow,
 )
 
 
@@ -128,3 +129,17 @@ def test_interrupted_wait_cancels_the_prompt(monkeypatch: pytest.MonkeyPatch) ->
         ("http://comfy/queue", {"delete": ["p1"]}),
         ("http://comfy/interrupt", {"prompt_id": "p1"}),
     ]
+
+
+def test_sd15_text_workflow_uses_the_checkpoint() -> None:
+    """Text to image draws from an empty latent with the checkpoint's UNet."""
+    settings = InpaintSettings("a knight", 3, batch_size=2)
+
+    workflow = build_sd15_text_workflow(settings, 512, 256)
+
+    assert workflow["7"]["inputs"] == {"width": 512, "height": 256, "batch_size": 2}
+    assert workflow["2"]["inputs"]["model"] == ["1", 0]
+    assert workflow["9"]["inputs"]["latent_image"] == ["7", 0]
+    assert workflow["9"]["inputs"]["denoise"] == 1.0
+    assert workflow["3"]["inputs"]["text"] == f"{LORA_TRIGGER}, a knight"
+    assert INPAINT_UNET_NODE not in workflow and "5" not in workflow

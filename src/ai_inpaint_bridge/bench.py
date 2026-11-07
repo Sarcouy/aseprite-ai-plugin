@@ -1,22 +1,34 @@
-"""Quality bench: fixed scenes, prompts and seeds rendered into one comparison sheet."""
+"""Quality bench: fixed cases, prompts and seeds rendered into one comparison sheet.
+
+Inpaint cases rewrite a selection of a drawn scene; sprite cases draw from the
+prompt alone.
+"""
 
 import argparse
+import textwrap
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Protocol
 
 from PIL import Image, ImageDraw
 
 from ai_inpaint_bridge.backends import (
     InpaintGenerator,
+    TextGenerator,
     changed_fraction,
+    diffusion_generate,
     diffusion_inpaint,
 )
-from ai_inpaint_bridge.comfyui import DEFAULT_URL, ComfyUIClient, InpaintSettings
+from ai_inpaint_bridge.comfyui import (
+    DEFAULT_URL,
+    ComfyUIClient,
+    InpaintSettings,
+    ModelProfile,
+)
 from ai_inpaint_bridge.pixelize import Color
 from ai_inpaint_bridge.tasks import TASKS
-from ai_inpaint_bridge.tasks.base import ModelProfile
 
 DB32_PATH = Path(
     "/usr/local/share/aseprite/data/extensions/dawnbringer-palettes/db32.gpl"
@@ -25,6 +37,7 @@ CONTEXT_MARGIN = 8
 CELL = 160
 GAP = 6
 LABEL_WIDTH = 190
+LABEL_CHARS = 30
 HEADER = 24
 SHEET_BACKGROUND = (40, 40, 48)
 LABEL_COLOR = (230, 230, 230)
@@ -48,13 +61,34 @@ class BenchCase:
 
 
 @dataclass(frozen=True)
-class BenchRow:
-    """The region sent for one case and the variants it produced."""
+class SpriteCase:
+    """One sprite drawn from the prompt alone, at its final size.
 
-    case: BenchCase
-    original: Image.Image
-    mask: Image.Image
+    A tile is opaque and shown repeated 3x3 on the sheet to reveal its seams.
+    """
+
+    name: str
+    prompt: str
+    size: tuple[int, int]
+    transparent: bool = True
+    tile: bool = False
+
+
+Case = BenchCase | SpriteCase
+
+
+@dataclass(frozen=True)
+class BenchRow:
+    """The variants of one case, with the region and mask sent for inpaint cases."""
+
+    case: Case
     variants: list[Image.Image]
+    original: Image.Image | None = None
+    mask: Image.Image | None = None
+
+
+class BenchGenerator(InpaintGenerator, TextGenerator, Protocol):
+    """A generator for both kinds of cases."""
 
 
 def load_gpl(path: Path) -> list[Color]:
@@ -110,6 +144,32 @@ BENCH_CASES: tuple[BenchCase, ...] = (
     BenchCase("rock-cut", "mossy rock", (32, 32), (16, 10, 28, 28), _rock, denoise=0.8),
 )
 
+KNIGHT = "top-down view, a knight character with a blue cape"
+WALK = (
+    "sprite sheet of a walking animation, 4 rows facing down, left, right and up, "
+    "4 frames per row, top-down view, a knight character with a blue cape"
+)
+SPRITE_CASES: tuple[SpriteCase, ...] = (
+    SpriteCase("knight-16", KNIGHT, (16, 16)),
+    SpriteCase("knight-32", KNIGHT, (32, 32)),
+    SpriteCase(
+        "grass-tile",
+        "top-down view, seamless grass ground texture filling the whole image",
+        (16, 16),
+        transparent=False,
+        tile=True,
+    ),
+    SpriteCase(
+        "wall-tile",
+        "top-down view, seamless grey stone brick wall texture filling the whole image",
+        (16, 16),
+        transparent=False,
+        tile=True,
+    ),
+    SpriteCase("knight-walk", WALK, (64, 64)),
+)
+ALL_CASES: tuple[Case, ...] = (*BENCH_CASES, *SPRITE_CASES)
+
 
 def render_case(
     case: BenchCase, palette: Sequence[Color]
@@ -129,20 +189,48 @@ def render_case(
     return canvas.crop(region), mask.crop(region)
 
 
-def run_bench(
-    cases: Sequence[BenchCase],
+def run_case(
+    case: Case,
     settings: InpaintSettings,
-    generator: InpaintGenerator,
+    generator: BenchGenerator,
     palette: Sequence[Color],
+    denoise: float | None = None,
+) -> BenchRow:
+    """Generate the variants of one case.
+
+    denoise replaces the change strength of inpaint cases when given.
+    """
+    if isinstance(case, SpriteCase):
+        sprite_settings = replace(settings, prompt=case.prompt)
+        variants = diffusion_generate(
+            case.size, sprite_settings, generator, palette, case.transparent
+        )
+        return BenchRow(case, variants)
+    source, mask = render_case(case, palette)
+    strength = case.denoise if denoise is None else denoise
+    case_settings = replace(settings, prompt=case.prompt, denoise=strength)
+    variants = diffusion_inpaint(source, mask, case_settings, generator, palette)
+    return BenchRow(case, variants, source, mask)
+
+
+def run_bench(
+    cases: Sequence[Case],
+    settings: InpaintSettings,
+    generator: BenchGenerator,
+    palette: Sequence[Color],
+    denoise: float | None = None,
 ) -> list[BenchRow]:
-    """Inpaint every case with the same settings (and seed)."""
-    rows: list[BenchRow] = []
-    for case in cases:
-        source, mask = render_case(case, palette)
-        case_settings = replace(settings, prompt=case.prompt, denoise=case.denoise)
-        variants = diffusion_inpaint(source, mask, case_settings, generator, palette)
-        rows.append(BenchRow(case, source, mask, variants))
-    return rows
+    """Run every case with the same settings (and seed)."""
+    return [run_case(case, settings, generator, palette, denoise) for case in cases]
+
+
+def tiled_preview(tile: Image.Image, repeat: int = 3) -> Image.Image:
+    """The tile repeated repeat x repeat times."""
+    preview = Image.new(tile.mode, (tile.width * repeat, tile.height * repeat))
+    for row in range(repeat):
+        for column in range(repeat):
+            preview.paste(tile, (column * tile.width, row * tile.height))
+    return preview
 
 
 def _checkered(image: Image.Image, zoom: int) -> Image.Image:
@@ -162,18 +250,25 @@ def _checkered(image: Image.Image, zoom: int) -> Image.Image:
 
 
 def _paste_row(sheet: Image.Image, row: BenchRow, top: int) -> None:
+    prompt = "\n".join(textwrap.wrap(row.case.prompt, LABEL_CHARS))
     ImageDraw.Draw(sheet).text(
-        (GAP, top), f"{row.case.name}\n{row.case.prompt}", fill=LABEL_COLOR
+        (GAP, top), f"{row.case.name}\n{prompt}", fill=LABEL_COLOR
     )
-    zoom = max(1, CELL // max(row.original.size))
-    for column, image in enumerate([row.original, *row.variants]):
+    variants = row.variants
+    if isinstance(row.case, SpriteCase) and row.case.tile:
+        variants = [tiled_preview(variant) for variant in variants]
+    shown = row.original if row.original is not None else variants[0]
+    zoom = max(1, CELL // max(shown.size))
+    for column, image in enumerate([row.original, *variants]):
+        if image is None:
+            continue
         tile = _checkered(image, zoom)
         left = LABEL_WIDTH + GAP + column * (CELL + GAP)
         sheet.paste(
             tile.convert("RGB"),
             (left + (CELL - tile.width) // 2, top + (CELL - tile.height) // 2),
         )
-        if column > 0:
+        if column > 0 and row.original is not None and row.mask is not None:
             changed = changed_fraction(row.original, image, row.mask)
             ImageDraw.Draw(sheet).text(
                 (left + 2, top + 2), f"{changed:.0%}", fill=(255, 64, 64)
@@ -192,6 +287,13 @@ def render_sheet(rows: Sequence[BenchRow], title: str) -> Image.Image:
     return sheet
 
 
+def _strength(text: str) -> float:
+    value = float(text)
+    if not 0 < value <= 1:
+        raise argparse.ArgumentTypeError(f"{text} is not in (0, 1]")
+    return value
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     task = TASKS["inpaint"]
     parser = argparse.ArgumentParser(
@@ -206,6 +308,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="base model, its settings are used unless overridden below",
     )
     parser.add_argument("--variants", type=int, default=4)
+    parser.add_argument(
+        "--denoise",
+        type=_strength,
+        help="change strength of every inpaint case, in (0, 1], their own when omitted",
+    )
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--steps", type=int)
     parser.add_argument("--cfg", type=float)
@@ -226,7 +333,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--cases",
         nargs="*",
-        choices=[case.name for case in BENCH_CASES],
+        choices=[case.name for case in ALL_CASES],
         help="case names, all when omitted",
     )
     parser.add_argument("--comfyui-url", default=DEFAULT_URL)
@@ -265,16 +372,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     model = TASKS["inpaint"].model(args.model)
     settings = bench_settings(args, model)
-    cases = [c for c in BENCH_CASES if not args.cases or c.name in args.cases]
+    cases = [c for c in ALL_CASES if not args.cases or c.name in args.cases]
     start = time.monotonic()
-    client = ComfyUIClient(args.comfyui_url, build_workflow=model.build_workflow)
-    rows = run_bench(cases, settings, client, load_gpl(args.palette))
+    client = ComfyUIClient(args.comfyui_url, model=model)
+    rows = run_bench(cases, settings, client, load_gpl(args.palette), args.denoise)
     title = (
         f"{model.name}  seed {settings.seed}  steps {settings.steps}  "
         f"cfg {settings.cfg}  {settings.sampler}/{settings.scheduler}  "
         f"unet {settings.inpaint_model or '-'}  "
         f"lora {settings.lora_strength}  hint {settings.background_hint}  "
-        f"grow {settings.mask_grow}  "
+        f"grow {settings.mask_grow}  denoise {args.denoise or 'per case'}  "
         f"{time.monotonic() - start:.0f} s"
     )
     render_sheet(rows, title).save(args.output)

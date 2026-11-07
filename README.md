@@ -129,7 +129,21 @@ Paramètres : `backend` (`invert` ou `comfyui`), `mode` (`rgb` ou `indexed`), `v
 
 ### Banc d'évaluation
 
-`ai-inpaint-bench` génère 7 scènes fixes (potion, coffre, slime, sapin, épée, retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection) en palette DB32, avec une seed fixe, et produit une planche : une ligne par scène, la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. ComfyUI doit tourner. `--model` choisit le modèle (klein par défaut) ; ses réglages s'appliquent, sauf ceux donnés en option. Comparer deux réglages revient à comparer deux planches :
+`ai-inpaint-bench` génère des cas fixes en palette DB32, avec une seed fixe, et produit une planche avec une ligne par cas. ComfyUI doit tourner.
+
+Cas de retouche : 7 scènes (potion, coffre, slime, sapin, épée, retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection). La ligne montre la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. `--denoise` impose une même force de modification à ces 7 cas (entre 0 exclu et 1).
+
+Cas générés depuis le prompt seul, pour les futures tâches :
+
+| Cas | Taille | Rendu sur la planche |
+|-----|--------|----------------------|
+| `knight-16`, `knight-32` | personnage vu de dessus, 16×16 et 32×32 | sur fond transparent |
+| `grass-tile`, `wall-tile` | tile d'herbe et de mur, 16×16 | répétée 3×3 pour voir les raccords |
+| `knight-walk` | planche de marche, 4 directions × 4 images de 16×16 | sur fond transparent |
+
+Ces cas sont générés à 512 px puis réduits par vote majoritaire. Un sprite transparent est demandé sur une couleur clé citée dans le prompt. Le modèle ne fait que l'approcher : klein dessine « magenta » en rose plus ou moins rouge. Le fond retiré est donc la couleur médiane mesurée sur le bord de chaque image.
+
+`--model` choisit le modèle (klein par défaut) ; ses réglages s'appliquent, sauf ceux donnés en option. `--cases` limite la planche à quelques cas. Comparer deux réglages revient à comparer deux planches :
 
 ```bash
 poetry run ai-inpaint-bench --output bench.png

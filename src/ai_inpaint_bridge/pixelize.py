@@ -68,6 +68,18 @@ def pick_key_color(colors: Sequence[Color]) -> tuple[Color, str]:
     )
 
 
+def border_color(image: Image.Image) -> Color:
+    """Median color of the outermost ring of pixels, the background of a sprite."""
+    rgb = image.convert("RGB")
+    width, height = rgb.size
+    ring = [rgb.getpixel((x, y)) for x in range(width) for y in (0, height - 1)]
+    ring += [rgb.getpixel((x, y)) for y in range(1, height - 1) for x in (0, width - 1)]
+    pixels = [pixel for pixel in ring if isinstance(pixel, tuple)]
+    channels = [sorted(pixel[band] for pixel in pixels) for band in range(3)]
+    middle = len(pixels) // 2
+    return (channels[0][middle], channels[1][middle], channels[2][middle])
+
+
 def _palette_image(palette: Sequence[Color]) -> Image.Image:
     used = list(palette[:PALETTE_SIZE])
     padding = [used[0]] * (PALETTE_SIZE - len(used))

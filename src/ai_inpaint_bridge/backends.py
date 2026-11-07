@@ -10,6 +10,7 @@ from ai_inpaint_bridge.comfyui import InpaintSettings
 from ai_inpaint_bridge.pixelize import (
     Color,
     band_values,
+    border_color,
     pixel_tuples,
     opaque_colors,
     pick_key_color,
@@ -19,6 +20,7 @@ from ai_inpaint_bridge.pixelize import (
 MASK_THRESHOLD = 127
 DIFFUSION_SIZE = 512
 LATENT_MULTIPLE = 8
+TEXT_MULTIPLE = 16
 NEUTRAL_GREY = (128, 128, 128)
 
 
@@ -31,6 +33,17 @@ class InpaintGenerator(
         self, image: Image.Image, mask: Image.Image, settings: InpaintSettings
     ) -> list[Image.Image]:
         """Return settings.batch_size RGB images of the same size as the input."""
+
+
+class TextGenerator(
+    Protocol
+):  # pylint: disable=too-few-public-methods  # a protocol describing one callable capability
+    """Anything able to draw RGB images from the prompt alone."""
+
+    def generate_text(
+        self, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """Return settings.batch_size RGB images of the given size."""
 
 
 def binarize_mask(mask: Image.Image) -> Image.Image:
@@ -151,6 +164,44 @@ def diffusion_inpaint(
             to_sprite_pixels(result, source.size, factor, palette, key_out),
             rgba,
             selection,
+        )
+        for result in results
+    ]
+
+
+def diffusion_generate(
+    size: tuple[int, int],
+    settings: InpaintSettings,
+    generator: TextGenerator,
+    palette: Sequence[Color] | None = None,
+    transparent: bool = True,
+) -> list[Image.Image]:
+    """Draw settings.batch_size sprites of the given size from the prompt alone.
+
+    The image is generated at an integer multiple of the size, rounded up to
+    the latent grid, then reduced by majority vote. A transparent sprite is
+    asked on a key color named in the prompt; the model only approximates it
+    (klein draws "magenta" as a pink), so the background that becomes
+    transparent is the color measured on the border of each image.
+    """
+    factor = scale_factor(size)
+    width = -(-size[0] * factor // TEXT_MULTIPLE) * TEXT_MULTIPLE
+    height = -(-size[1] * factor // TEXT_MULTIPLE) * TEXT_MULTIPLE
+    if transparent:
+        key_name = pick_key_color(list(palette or []))[1]
+        settings = replace(settings, background=key_name, background_hint=True)
+    results = generator.generate_text(settings, width, height)
+    if len(results) != settings.batch_size:
+        raise ValueError(
+            f"expected {settings.batch_size} generated images, got {len(results)}"
+        )
+    return [
+        to_sprite_pixels(
+            result,
+            size,
+            factor,
+            palette,
+            border_color(result) if transparent else None,
         )
         for result in results
     ]
