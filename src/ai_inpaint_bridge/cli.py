@@ -2,7 +2,9 @@
 
 import argparse
 import random
+import signal
 import sys
+from types import FrameType
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -134,11 +136,28 @@ def run(request: BridgeRequest) -> None:
         result.save(variant_path(request.output, index))
 
 
+class Cancelled(Exception):
+    """The extension asked the bridge to stop."""
+
+
+def _cancel(signal_number: int, frame: FrameType | None) -> None:
+    del signal_number, frame
+    raise Cancelled()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the bridge and report errors on stderr for the Aseprite dialog."""
+    """Run the bridge and report errors on stderr for the Aseprite dialog.
+
+    SIGTERM, sent by the extension's Cancel button, stops the generation on
+    ComfyUI before exiting.
+    """
     request = parse_args(argv)
+    signal.signal(signal.SIGTERM, _cancel)
     try:
         run(request)
+    except Cancelled:
+        print("ai-inpaint-bridge: cancelled", file=sys.stderr)
+        return 1
     except requests.ConnectionError:
         print(
             f"ai-inpaint-bridge: ComfyUI is not reachable at {request.context.comfyui_url}, "

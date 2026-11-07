@@ -27,6 +27,8 @@ local UNCHANGED_COLOR = Color{ r = 220, g = 40, b = 40, a = 255 }
 local UNCHANGED_THRESHOLD = 0.05
 
 local inpaint
+-- The run in progress: only one generation at a time.
+local running
 
 local function preferences(plugin)
   for key, value in pairs(DEFAULT_PREFERENCES) do
@@ -242,8 +244,8 @@ local function apply_job(sprite, frame, job, target)
 end
 
 -- One entry per bridge task: ask fills the preferences from the task's dialog
--- and returns false when the user cancels, generate returns a job or nil and a
--- message.
+-- and returns false when the user cancels, start launches the bridge in the
+-- background and returns a run for inpaint.poll, or nil and a message.
 local function task_entries()
   return {
     {
@@ -251,15 +253,118 @@ local function task_entries()
       command_id = "AiInpaintSelection",
       title = "Inpaint Selection",
       enabled = function()
-        return app.sprite ~= nil and not app.sprite.selection.isEmpty
+        return running == nil and app.sprite ~= nil and not app.sprite.selection.isEmpty
       end,
       ask = ask_inpaint,
-      generate = inpaint.generate,
+      start = inpaint.start,
     },
   }
 end
 
+-- Returns nil when the result can still be applied, otherwise a message.
+local function apply_problem(run_state)
+  if inpaint.is_closed(run_state.sprite) then
+    return "The sprite was closed during the generation."
+  end
+  if run_state.frame_number > #run_state.sprite.frames then
+    return "The frame was deleted during the generation."
+  end
+  if run_state.target then
+    local ok, problem = pcall(function()
+      return inpaint.active_layer_problem(run_state.target)
+        or (run_state.target.sprite ~= run_state.sprite and "The layer was deleted." or nil)
+    end)
+    if not ok then
+      return "The active layer was deleted during the generation."
+    end
+    return problem
+  end
+  return nil
+end
+
+local function on_result(run_state, job, message)
+  if not job then
+    if message then
+      app.alert{ title = "AI", text = alert_lines(message) }
+    end
+    return
+  end
+  local problem = apply_problem(run_state)
+  if problem then
+    app.alert{ title = "AI", text = problem }
+    return
+  end
+  local sprite = run_state.sprite
+  app.sprite = sprite
+  apply_job(sprite, sprite.frames[run_state.frame_number], job, run_state.target)
+end
+
+-- Shows a progress window while the bridge runs in the background; Cancel
+-- or closing the window stops the bridge.
+local function wait_for(run, run_state)
+  local started = os.time()
+  local done = false
+  local timer
+  local dlg = Dialog{
+    title = "AI",
+    onclose = function()
+      if not done then
+        done = true
+        timer:stop()
+        inpaint.cancel(run)
+        running = nil
+        local stopper
+        stopper = Timer{ interval = 0.5, ontick = function()
+          if inpaint.poll(run) ~= nil then
+            stopper:stop()
+          end
+        end }
+        stopper:start()
+      end
+    end,
+  }
+  dlg:label{ id = "status", text = run_state.label }
+  dlg:button{ id = "cancel", text = "Cancel", onclick = function() dlg:close() end }
+  local function stop()
+    done = true
+    timer:stop()
+    running = nil
+    dlg:close()
+  end
+  local function tick()
+    local finished, job_or_message = inpaint.poll(run)
+    if finished == nil then
+      dlg:modify{ id = "status", text = run_state.label .. " " .. os.time() - started .. " s" }
+      return
+    end
+    stop()
+    if finished then
+      on_result(run_state, job_or_message)
+    else
+      on_result(run_state, nil, job_or_message)
+    end
+  end
+  timer = Timer{
+    interval = 0.25,
+    ontick = function()
+      local ok, problem = pcall(tick)
+      if not ok then
+        if not done then
+          stop()
+        end
+        app.alert{ title = "AI", text = alert_lines("Unexpected error:\n" .. tostring(problem)) }
+      end
+    end,
+  }
+  dlg:show{ wait = false }
+  timer:start()
+end
+
 local function run_task(plugin, task)
+  if running then
+    app.alert{ title = "AI", text = "A generation is already running." }
+    return
+  end
   local prefs = preferences(plugin)
   if prefs.backend == "comfyui" and not task.ask(prefs) then
     return
@@ -276,12 +381,18 @@ local function run_task(plugin, task)
   end
   local options = run_options(prefs)
   options.task = task.name
-  local job, message = task.generate(sprite, frame, options)
-  if not job then
+  local run, message = task.start(sprite, frame, options)
+  if not run then
     app.alert{ title = "AI", text = alert_lines(message) }
     return
   end
-  apply_job(sprite, frame, job, target)
+  running = run
+  wait_for(run, {
+    sprite = sprite,
+    frame_number = frame.frameNumber,
+    target = target,
+    label = task.title .. ": generating " .. options.variants .. " variant(s)...",
+  })
 end
 
 function init(plugin)
@@ -311,4 +422,10 @@ function init(plugin)
       show_settings(plugin)
     end,
   }
+end
+
+function exit(plugin)
+  if running then
+    inpaint.cancel(running)
+  end
 end

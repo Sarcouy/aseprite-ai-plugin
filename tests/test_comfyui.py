@@ -1,9 +1,14 @@
-"""Tests of the ComfyUI workflow builder."""
+"""Tests of the ComfyUI workflow builder and client."""
+
+from typing import cast
 
 import pytest
+import requests
+from PIL import Image
 
 from ai_inpaint_bridge.comfyui import (
     LORA_TRIGGER,
+    ComfyUIClient,
     OUTPUT_NODE,
     INPAINT_UNET_NODE,
     REPEAT_NODE,
@@ -89,3 +94,37 @@ def test_background_hint_can_be_disabled() -> None:
     workflow = build_inpaint_workflow("in.png", "mask.png", settings)
 
     assert workflow["3"]["inputs"]["text"] == f"{LORA_TRIGGER}, a chest"
+
+
+class FakeSession:  # pylint: disable=too-few-public-methods  # stands in for the one requests.Session method the cancel path uses
+    """Records the POST requests, as a requests.Session would send them."""
+
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, object]] = []
+
+    def post(self, url: str, json: object = None, **kwargs: object) -> None:
+        """Record the URL and JSON body."""
+        del kwargs
+        self.posts.append((url, json))
+
+
+def test_interrupted_wait_cancels_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stopping the bridge removes its prompt from ComfyUI."""
+    session = FakeSession()
+    client = ComfyUIClient("http://comfy", session=cast(requests.Session, session))
+    monkeypatch.setattr(client, "_upload", lambda image, name: name)
+    monkeypatch.setattr(client, "_queue", lambda workflow: "p1")
+
+    def interrupted(prompt_id: str) -> dict[str, object]:
+        raise KeyboardInterrupt(prompt_id)
+
+    monkeypatch.setattr(client, "_wait", interrupted)
+    image = Image.new("RGB", (8, 8))
+
+    with pytest.raises(KeyboardInterrupt):
+        client.generate(image, image, InpaintSettings(prompt="", seed=1))
+
+    assert session.posts == [
+        ("http://comfy/queue", {"delete": ["p1"]}),
+        ("http://comfy/interrupt", {"prompt_id": "p1"}),
+    ]

@@ -36,7 +36,7 @@ sprite.selection = Selection(Rectangle(2, 2, 3, 3))
 
 local backend = app.params.backend or "invert"
 local variants = tonumber(app.params.variants or "2")
-local job, message = inpaint.generate(sprite, sprite.frames[1], {
+local options = {
   bridge_command = app.params.bridge,
   margin = 2,
   backend = backend,
@@ -45,8 +45,58 @@ local job, message = inpaint.generate(sprite, sprite.frames[1], {
   denoise = 1.0,
   use_palette = true,
   variants = variants,
-})
+}
+local job, message = inpaint.generate(sprite, sprite.frames[1], options)
 assert(job, message)
+
+-- Background run, polled in a loop since no timer ticks in batch mode.
+local function wait_run(run)
+  for _ = 1, 1200 do
+    local finished, result = inpaint.poll(run)
+    if finished ~= nil then
+      return finished, result
+    end
+    os.execute("sleep 0.1")
+  end
+  error("the background run did not finish")
+end
+
+local run = assert(inpaint.start(sprite, sprite.frames[1], options))
+local finished, async_job = wait_run(run)
+assert(finished, async_job)
+assert(#async_job.patches == variants, "the background run returned the wrong variant count")
+if backend == "invert" then
+  assert(async_job.patches[1]:isEqual(job.patches[1]), "background and blocking runs differ")
+end
+assert(not app.fs.isFile(run.paths.input), "the background run left its files")
+
+local slow_bridge = app.fs.joinPath(app.fs.tempPath, "aseprite-ai-inpaint-slow-bridge.sh")
+local file = assert(io.open(slow_bridge, "w"))
+file:write("#!/bin/sh\nexec sleep 30\n")
+file:close()
+os.execute("chmod +x '" .. slow_bridge .. "'")
+local slow_options = {}
+for key, value in pairs(options) do
+  slow_options[key] = value
+end
+slow_options.bridge_command = slow_bridge
+local started = os.time()
+local slow_run = assert(inpaint.start(sprite, sprite.frames[1], slow_options))
+inpaint.cancel(slow_run)
+local cancelled, cancel_message = wait_run(slow_run)
+assert(cancelled == false and cancel_message == nil, "a cancelled run must end without a job")
+assert(os.time() - started < 10, "cancel did not stop the bridge")
+assert(not app.fs.isFile(slow_run.paths.input), "the cancelled run left its files")
+
+local closing_sprite = Sprite(sprite.width, sprite.height, sprite.colorMode)
+closing_sprite.selection = Selection(Rectangle(2, 2, 3, 3))
+local closing_run = assert(inpaint.start(closing_sprite, closing_sprite.frames[1], slow_options))
+closing_sprite:close()
+local closed_finished, closed_message = wait_run(closing_run)
+assert(closed_finished == false and closed_message, "closing the sprite must end the run")
+assert(not app.fs.isFile(closing_run.paths.input), "the run of a closed sprite left its files")
+app.sprite = sprite
+os.remove(slow_bridge)
 assert(#job.patches == variants, "expected " .. variants .. " patches, got " .. #job.patches)
 assert(#job.previews == variants, "expected " .. variants .. " previews")
 if backend == "invert" then

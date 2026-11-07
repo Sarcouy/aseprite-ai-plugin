@@ -95,8 +95,9 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
    - l'utilisation ou non de la palette du sprite (toujours utilisée en mode indexé) ;
    - le nombre de variantes (1 à 8) ;
    - la sortie : `New layer` (nouveau calque `AI inpaint`) ou `Active layer` (le calque actif est modifié, les pixels transparents du résultat effacent l'original ; sur un calque de fond, ils prennent la couleur d'arrière-plan, comme avec la gomme).
-4. Avec plusieurs variantes, une fenêtre les affiche sur la région d'origine : cliquer sur une variante puis **Apply**, ou **Keep all as layers** pour obtenir un groupe `AI inpaint` avec un calque par variante (seule la première est visible). **Cancel** n'applique rien.
-5. Seuls les pixels sélectionnés sont modifiés, en une seule annulation.
+4. La génération tourne en arrière-plan (environ 10 s par variante avec klein sur une RTX 3050 Ti 4 Go) : Aseprite reste utilisable et une fenêtre affiche le temps écoulé. **Cancel**, ou la fermeture de cette fenêtre, arrête le pont et la génération en cours dans ComfyUI ; rien n'est appliqué. Une seule génération à la fois est possible. Si le sprite, l'image ou le calque actif visé a été supprimé entre-temps, le résultat est abandonné avec un message.
+5. Avec plusieurs variantes, une fenêtre les affiche sur la région d'origine : cliquer sur une variante puis **Apply**, ou **Keep all as layers** pour obtenir un groupe `AI inpaint` avec un calque par variante (seule la première est visible). **Cancel** n'applique rien.
+6. Seuls les pixels sélectionnés sont modifiés (ceux de la sélection au lancement), en une seule annulation.
 
 Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA.
 
@@ -118,7 +119,7 @@ poetry run black --check .
 poetry run mypy src tests
 ```
 
-Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, nouveau calque, groupe de variantes, calque actif). La fenêtre de choix des variantes ne peut être testée qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
+Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif). En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
 
 ```bash
 aseprite -b --script-param bridge="$(poetry env info -p)/bin/ai-inpaint-bridge" --script-param backend=invert --script-param mode=rgb --script-param variants=3 --script tests/roundtrip.lua
@@ -201,7 +202,9 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 ## Limites connues
 
 - Mode niveaux de gris non pris en charge.
-- Aseprite est figé pendant la génération (environ 10 s par variante avec klein sur une RTX 3050 Ti 4 Go).
+- Le lancement en arrière-plan passe par `sh` et `kill` : Linux et macOS seulement.
+- **Cancel** arrête le processus lancé par la commande du pont : elle doit être le chemin direct de `ai-inpaint-bridge` (celui écrit par le script d'installation). Avec une commande intermédiaire comme `poetry run ai-inpaint-bridge`, seule celle-ci serait arrêtée et la génération continuerait.
+- Le modèle part de l'image au lancement : les retouches faites pendant la génération ne sont pas vues par le modèle, mais le résultat s'applique par-dessus.
 - Le résultat varie encore d'une seed à l'autre : environ 3 variantes sur 4 sont utilisables sur le banc. La fenêtre de choix barre en rouge les variantes qui changent moins de 5 % des pixels sélectionnés.
 - La retouche d'un dessin existant (force de modification à 60 %) suit mal le prompt : sur le banc, « mossy rock » ajoute de la mousse à 0 à 2 variantes sur 4 avec klein, jamais avec SD 1.5.
 - En sortie `New layer`, le calque `AI inpaint` se superpose à l'original : un pixel rendu transparent n'efface pas ce qu'il y a dessous. Utiliser `Active layer` pour effacer.

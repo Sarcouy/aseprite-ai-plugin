@@ -199,7 +199,24 @@ class ComfyUIClient:  # pylint: disable=too-few-public-methods  # implements the
         image_name = self._upload(image, "aseprite-ai-inpaint-input.png")
         mask_name = self._upload(mask, "aseprite-ai-inpaint-mask.png")
         prompt_id = self._queue(self._build_workflow(image_name, mask_name, settings))
-        return self._download_all(self._wait(prompt_id))
+        try:
+            entry = self._wait(prompt_id)
+        except BaseException:
+            self.cancel(prompt_id)
+            raise
+        return self._download_all(entry)
+
+    def cancel(self, prompt_id: str) -> None:
+        """Drop the prompt from the queue, or stop it if it is running."""
+        try:
+            self._session.post(
+                f"{self._base_url}/queue", json={"delete": [prompt_id]}, timeout=5
+            )
+            self._session.post(
+                f"{self._base_url}/interrupt", json={"prompt_id": prompt_id}, timeout=5
+            )
+        except requests.RequestException:
+            pass
 
     def _upload(self, image: Image.Image, name: str) -> str:
         response = self._session.post(
