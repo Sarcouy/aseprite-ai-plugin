@@ -93,8 +93,10 @@ local function run_bridge(options, paths)
   -- LC_NUMERIC may use a decimal comma, which argparse would reject.
   local denoise = string.format("%.2f", options.denoise or 0.8):gsub(",", ".")
   local cmd = string.format(
-    "%s --input %s --mask %s --output %s --backend %s --prompt %s --denoise %s --variants %d",
-    options.bridge_command, shell_quote(paths.input), shell_quote(paths.mask),
+    "%s --task %s --input %s --mask %s --output %s --backend %s --prompt %s --denoise %s"
+      .. " --variants %d",
+    options.bridge_command, shell_quote(options.task or "inpaint"),
+    shell_quote(paths.input), shell_quote(paths.mask),
     shell_quote(paths.output), shell_quote(options.backend or "invert"),
     shell_quote(options.prompt or ""), denoise, #paths.variants)
   if paths.palette then

@@ -26,7 +26,7 @@ Traitement dans le pont :
 
 ComfyUI utilise l'UNet de `sd-v1-5-inpainting` (nœuds `UNETLoader` et `InpaintModelConditioning`) avec le CLIP et le VAE du checkpoint SD 1.5, la LoRA PixelArtRedmond et une CFG de 10.
 
-Le pont exécute une tâche choisie avec `--task` : seule `inpaint` (la retouche, tâche par défaut) existe pour l'instant. Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py`. Les options `--output`, `--backend`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches.
+Le pont exécute une tâche choisie avec `--task` : seule `inpaint` (la retouche, tâche par défaut) existe pour l'instant. Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
@@ -55,7 +55,7 @@ poetry install
 ./scripts/install-extension.sh
 ```
 
-Le script crée `~/.config/aseprite/extensions/aseprite-ai-inpaint` avec un lien symbolique par fichier de `extension/` : les modifications du projet sont prises en compte au redémarrage d'Aseprite. Un lien symbolique sur le dossier entier ne fonctionne pas, Aseprite l'ignore. Le script préremplit aussi la commande du pont (modifiable dans **Edit > FX > AI Inpaint Settings...**).
+Le script crée `~/.config/aseprite/extensions/aseprite-ai-inpaint` avec un lien symbolique par fichier de `extension/` : les modifications du projet sont prises en compte au redémarrage d'Aseprite. Un lien symbolique sur le dossier entier ne fonctionne pas, Aseprite l'ignore. Le script préremplit aussi la commande du pont (modifiable dans **Edit > AI > Settings...**).
 
 Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'exécuter la commande : choisir « Allow ».
 
@@ -68,7 +68,7 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
    ```
 
 2. Ouvrir un sprite (RGB ou indexé) et sélectionner une zone.
-3. **Edit > FX > AI Inpaint Selection**, saisir :
+3. **Edit > AI > Inpaint Selection**, saisir :
    - un prompt en anglais ;
    - la force de modification (100 % = la zone est entièrement redessinée) ;
    - l'utilisation ou non de la palette du sprite (toujours utilisée en mode indexé) ;
@@ -77,7 +77,7 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
 4. Avec plusieurs variantes, une fenêtre les affiche sur la région d'origine : cliquer sur une variante puis **Apply**, ou **Keep all as layers** pour obtenir un groupe `AI inpaint` avec un calque par variante (seule la première est visible). **Cancel** n'applique rien.
 5. Seuls les pixels sélectionnés sont modifiés, en une seule annulation.
 
-Le backend se choisit dans **AI Inpaint Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA.
+Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA.
 
 ## Développement
 

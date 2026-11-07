@@ -48,7 +48,7 @@ end
 
 local function show_settings(plugin)
   local prefs = preferences(plugin)
-  local dlg = Dialog("AI Inpaint Settings")
+  local dlg = Dialog("AI Settings")
   dlg:combobox{ id = "backend", label = "Backend", option = prefs.backend, options = BACKENDS }
   dlg:entry{ id = "bridge_command", label = "Bridge command", text = prefs.bridge_command }
   dlg:number{ id = "margin", label = "Context margin (px)",
@@ -64,7 +64,7 @@ local function show_settings(plugin)
 end
 
 -- Returns false when the user cancels.
-local function ask_generation(prefs)
+local function ask_inpaint(prefs)
   local dlg = Dialog("AI Inpaint")
   dlg:entry{ id = "prompt", label = "Prompt", text = prefs.prompt, focus = true }
   dlg:slider{ id = "denoise", label = "Change strength (%)", min = 0, max = 100,
@@ -151,7 +151,7 @@ local function pick_variant(job)
     end
   end
   selected = selected or 1
-  local dlg = Dialog("AI Inpaint - Pick a variant")
+  local dlg = Dialog("AI - Pick a variant")
   local function update_label()
     local text = "Variant " .. selected .. " of " .. #job.previews
     if unchanged[selected] then
@@ -234,44 +234,72 @@ local function apply_job(sprite, frame, job, target)
   end
 end
 
+-- One entry per bridge task: ask fills the preferences from the task's dialog
+-- and returns false when the user cancels, generate returns a job or nil and a
+-- message.
+local function task_entries()
+  return {
+    {
+      name = "inpaint",
+      command_id = "AiInpaintSelection",
+      title = "Inpaint Selection",
+      enabled = function()
+        return app.sprite ~= nil and not app.sprite.selection.isEmpty
+      end,
+      ask = ask_inpaint,
+      generate = inpaint.generate,
+    },
+  }
+end
+
+local function run_task(plugin, task)
+  local prefs = preferences(plugin)
+  if prefs.backend == "comfyui" and not task.ask(prefs) then
+    return
+  end
+  local sprite, frame = app.sprite, app.frame
+  local target
+  if prefs.output == "Active layer" then
+    local problem = inpaint.active_layer_problem(app.layer)
+    if problem then
+      app.alert{ title = "AI", text = problem }
+      return
+    end
+    target = app.layer
+  end
+  local options = run_options(prefs)
+  options.task = task.name
+  local job, message = task.generate(sprite, frame, options)
+  if not job then
+    app.alert{ title = "AI", text = alert_lines(message) }
+    return
+  end
+  apply_job(sprite, frame, job, target)
+end
+
 function init(plugin)
   inpaint = dofile(app.fs.joinPath(plugin.path, "inpaint.lua"))
 
-  plugin:newCommand{
-    id = "AiInpaintSelection",
-    title = "AI Inpaint Selection",
-    group = "edit_fx",
-    onenabled = function()
-      return app.sprite ~= nil and not app.sprite.selection.isEmpty
-    end,
-    onclick = function()
-      local prefs = preferences(plugin)
-      if prefs.backend == "comfyui" and not ask_generation(prefs) then
-        return
-      end
-      local sprite, frame = app.sprite, app.frame
-      local target
-      if prefs.output == "Active layer" then
-        local problem = inpaint.active_layer_problem(app.layer)
-        if problem then
-          app.alert{ title = "AI Inpaint", text = problem }
-          return
-        end
-        target = app.layer
-      end
-      local job, message = inpaint.generate(sprite, frame, run_options(prefs))
-      if not job then
-        app.alert{ title = "AI Inpaint", text = alert_lines(message) }
-        return
-      end
-      apply_job(sprite, frame, job, target)
-    end,
-  }
+  plugin:newMenuGroup{ id = "ai_menu", title = "AI", group = "edit_new" }
+
+  for _, task in ipairs(task_entries()) do
+    plugin:newCommand{
+      id = task.command_id,
+      title = task.title,
+      group = "ai_menu",
+      onenabled = task.enabled,
+      onclick = function()
+        run_task(plugin, task)
+      end,
+    }
+  end
+
+  plugin:newMenuSeparator{ group = "ai_menu" }
 
   plugin:newCommand{
     id = "AiInpaintSettings",
-    title = "AI Inpaint Settings...",
-    group = "edit_fx",
+    title = "Settings...",
+    group = "ai_menu",
     onclick = function()
       show_settings(plugin)
     end,
