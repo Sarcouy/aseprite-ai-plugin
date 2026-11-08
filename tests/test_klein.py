@@ -13,7 +13,7 @@ from ai_inpaint_bridge.klein import (
     build_klein_inpaint_workflow,
     build_klein_text_workflow,
     klein_prompt,
-    total_steps,
+    klein_sigmas,
 )
 
 
@@ -35,28 +35,58 @@ def test_background_hint_is_optional() -> None:
 
 
 @pytest.mark.parametrize(
-    ("denoise", "expected"), [(1.0, 4), (0.8, 5), (0.6, 7), (1.5, 4)]
+    ("steps", "size", "expected"),
+    [
+        (4, (512, 512), [1.0, 0.958085, 0.883982, 0.717497, 0.0]),
+        (4, (416, 512), [1.0, 0.957427, 0.882302, 0.714185, 0.0]),
+        (4, (1024, 1024), [1.0, 0.967384, 0.908144, 0.7672, 0.0]),
+        (
+            20,
+            (512, 512),
+            [1.0, 0.992315, 0.983914, 0.974691, 0.964519, 0.953245, 0.940679]
+            + [0.926586, 0.910668, 0.892546, 0.871731, 0.847571, 0.819192]
+            + [0.785382, 0.744416, 0.693755, 0.629496, 0.545312, 0.430239]
+            + [0.263454, 0.0],
+        ),
+    ],
 )
-def test_lower_strength_samples_the_end_of_a_longer_schedule(
-    denoise: float, expected: int
+def test_full_strength_matches_comfyui_flux2_schedule(
+    steps: int, size: tuple[int, int], expected: list[float]
 ) -> None:
-    """Only the last 4 steps are sampled, from a schedule of steps / denoise."""
-    assert total_steps(replace(KLEIN_SETTINGS, denoise=denoise)) == expected
+    """At strength 1 the schedule is the one of ComfyUI's Flux2Scheduler."""
+    settings = replace(KLEIN_SETTINGS, steps=steps, denoise=1.0)
+
+    assert klein_sigmas(settings, *size) == pytest.approx(expected, abs=1e-6)
+
+
+def test_lower_strength_starts_later_with_the_same_step_count() -> None:
+    """Each strength samples 4 steps, from a lower noise level when it is lower."""
+    starts = []
+    for denoise in (0.6, 0.8, 0.9, 1.0):
+        sigmas = klein_sigmas(replace(KLEIN_SETTINGS, denoise=denoise), 512, 512)
+        assert len(sigmas) == 5
+        assert sigmas == sorted(sigmas, reverse=True)
+        assert sigmas[-1] == 0.0
+        starts.append(sigmas[0])
+
+    assert starts == sorted(starts)
+    assert len(set(starts)) == 4
+    assert starts[1] == pytest.approx(0.968, abs=1e-3)
 
 
 @pytest.mark.parametrize("denoise", [0.0, -0.2])
 def test_rejects_zero_strength(denoise: float) -> None:
-    """A zero change strength would need an infinite schedule."""
+    """A zero change strength would not change anything."""
     with pytest.raises(ValueError, match="above 0"):
-        total_steps(replace(KLEIN_SETTINGS, denoise=denoise))
+        klein_sigmas(replace(KLEIN_SETTINGS, denoise=denoise), 512, 512)
 
 
 def test_workflow_uses_the_image_as_reference() -> None:
     """The encoded image conditions the prompt and seeds the masked latent."""
-    settings = replace(KLEIN_SETTINGS, prompt="a gem", seed=42, denoise=0.6)
+    settings = replace(KLEIN_SETTINGS, prompt="a gem", seed=42, denoise=0.8)
     settings = replace(settings, batch_size=4)
 
-    workflow = build_klein_inpaint_workflow("in.png", "mask.png", settings)
+    workflow = build_klein_inpaint_workflow("in.png", "mask.png", settings, (512, 512))
 
     assert workflow["5"]["inputs"]["image"] == "in.png"
     assert workflow["6"]["inputs"] == {"image": "mask.png", "channel": "red"}
@@ -65,13 +95,10 @@ def test_workflow_uses_the_image_as_reference() -> None:
     assert workflow["8"]["inputs"] == {"samples": ["7", 0], "amount": 4}
     assert workflow["17"]["inputs"]["noise_seed"] == 42
     assert workflow["18"]["inputs"]["cfg"] == 1.0
-    assert workflow["15"]["inputs"] == {
-        "steps": 7,
-        "width": ["22", 0],
-        "height": ["22", 1],
-    }
-    assert workflow["16"]["inputs"]["step"] == 3
-    assert workflow["19"]["inputs"]["sigmas"] == ["16", 1]
+    assert workflow["15"]["class_type"] == "ManualSigmas"
+    sigmas = [float(x) for x in workflow["15"]["inputs"]["sigmas"].split(", ")]
+    assert sigmas == pytest.approx(klein_sigmas(settings, 512, 512), abs=1e-9)
+    assert workflow["19"]["inputs"]["sigmas"] == ["15", 0]
     assert workflow[OUTPUT_NODE]["inputs"]["images"] == ["10", 0]
 
 

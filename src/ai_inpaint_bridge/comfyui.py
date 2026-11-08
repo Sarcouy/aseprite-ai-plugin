@@ -50,7 +50,7 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
     mask_grow: int = 2
 
 
-WorkflowBuilder = Callable[[str, str, InpaintSettings], Workflow]
+WorkflowBuilder = Callable[[str, str, InpaintSettings, tuple[int, int]], Workflow]
 TextWorkflowBuilder = Callable[[InpaintSettings, int, int], Workflow]
 
 
@@ -75,13 +75,18 @@ def positive_prompt(settings: InpaintSettings) -> str:
 
 
 def build_inpaint_workflow(
-    image_name: str, mask_name: str, settings: InpaintSettings
+    image_name: str,
+    mask_name: str,
+    settings: InpaintSettings,
+    size: tuple[int, int] | None = None,
 ) -> Workflow:
     """Return the API-format graph: masked img2img on an SD checkpoint with a LoRA.
 
     With an inpaint_model, its UNet replaces the checkpoint's one (CLIP and VAE
     are shared with SD 1.5) and also receives the masked image as conditioning.
+    The image size is not needed.
     """
+    del size
     positive = positive_prompt(settings)
     workflow: Workflow = {
         "1": {
@@ -198,8 +203,8 @@ def build_sd15_text_workflow(
 class ModelProfile:
     """Base model: its ComfyUI graphs and its default settings.
 
-    build_inpaint rewrites the masked area of an uploaded image, build_text
-    draws from the prompt alone at the given size.
+    build_inpaint rewrites the masked area of an uploaded image of the given
+    size, build_text draws from the prompt alone at the given size.
     """
 
     name: str
@@ -246,7 +251,10 @@ class ComfyUIClient:
         """Inpaint the masked area, return the decoded images in batch order."""
         image_name = self._upload(image, "aseprite-ai-inpaint-input.png")
         mask_name = self._upload(mask, "aseprite-ai-inpaint-mask.png")
-        return self._run(self._model.build_inpaint(image_name, mask_name, settings))
+        workflow = self._model.build_inpaint(
+            image_name, mask_name, settings, image.size
+        )
+        return self._run(workflow)
 
     def generate_text(
         self, settings: InpaintSettings, width: int, height: int

@@ -1,5 +1,6 @@
 """Graphs of FLUX.2 klein 4B (distilled and base): inpainting and text to image."""
 
+import math
 from dataclasses import replace
 from typing import Any
 
@@ -37,15 +38,31 @@ def klein_prompt(settings: InpaintSettings) -> str:
     return ", ".join(part for part in parts if part)
 
 
-def total_steps(settings: InpaintSettings) -> int:
-    """Length of the schedule whose last settings.steps steps are sampled.
+def _flux2_shift(seq_len: int, steps: int) -> float:
+    """exp(mu) of the FLUX.2 schedule, mu as in ComfyUI's Flux2Scheduler."""
+    a1, b1 = 8.73809524e-05, 1.89833333
+    a2, b2 = 0.00016927, 0.45666666
+    if seq_len > 4300:
+        return math.exp(a2 * seq_len + b2)
+    mu_200 = a2 * seq_len + b2
+    mu_10 = a1 * seq_len + b1
+    slope = (mu_200 - mu_10) / 190.0
+    return math.exp(mu_200 + slope * (steps - 200.0))
 
-    Skipping the first steps of a longer schedule starts from a partly noised
-    image, which is how a change strength below 1 is applied.
+
+def klein_sigmas(settings: InpaintSettings, width: int, height: int) -> list[float]:
+    """Noise levels of the settings.steps sampled steps, for an image of that size.
+
+    The FLUX.2 schedule is followed from the time settings.denoise down to 0:
+    a change strength of 1 gives the full schedule, a lower one starts from a
+    partly noised image. Every strength samples the same number of steps.
     """
     if settings.denoise <= 0:
         raise ValueError("the change strength must be above 0 with FLUX.2 klein")
-    return max(settings.steps, round(settings.steps / settings.denoise))
+    start = min(settings.denoise, 1.0)
+    shift = _flux2_shift(round(width * height / 256), settings.steps)
+    times = [start * (1 - step / settings.steps) for step in range(settings.steps)]
+    return [shift / (shift + 1 / time - 1) for time in times] + [0.0]
 
 
 Link = list[Any]
@@ -55,14 +72,14 @@ def _klein_nodes(
     settings: InpaintSettings,
     positive: Link,
     latent: Link,
-    schedule: dict[str, Any],
-    sigmas: Link,
+    sigmas: dict[str, Any],
 ) -> Workflow:
     """Loaders, prompt, sampler and decoder shared by both graphs.
 
-    settings.checkpoint is the diffusion model file. With a CFG of 1 the
-    negative is the zeroed prompt, otherwise the empty prompt. settings.lora,
-    when given, is applied to the model only.
+    sigmas is node 15, which gives the noise levels. settings.checkpoint is the
+    diffusion model file. With a CFG of 1 the negative is the zeroed prompt,
+    otherwise the empty prompt. settings.lora, when given, is applied to the
+    model only.
     """
     model: Link = ["1", 0]
     extra: Workflow = {}
@@ -115,7 +132,7 @@ def _klein_nodes(
             "class_type": "KSamplerSelect",
             "inputs": {"sampler_name": settings.sampler},
         },
-        "15": {"class_type": "Flux2Scheduler", "inputs": schedule},
+        "15": sigmas,
         "17": {"class_type": "RandomNoise", "inputs": {"noise_seed": settings.seed}},
         "18": {
             "class_type": "CFGGuider",
@@ -132,7 +149,7 @@ def _klein_nodes(
                 "noise": ["17", 0],
                 "guider": ["18", 0],
                 "sampler": ["14", 0],
-                "sigmas": sigmas,
+                "sigmas": ["15", 0],
                 "latent_image": latent,
             },
         },
@@ -140,21 +157,21 @@ def _klein_nodes(
 
 
 def build_klein_inpaint_workflow(
-    image_name: str, mask_name: str, settings: InpaintSettings
+    image_name: str, mask_name: str, settings: InpaintSettings, size: tuple[int, int]
 ) -> Workflow:
     """Return the API-format graph: masked sampling with the image as reference.
 
     The encoded image is both the starting latent (with a noise mask) and a
-    reference latent added to the prompt conditioning.
+    reference latent added to the prompt conditioning. size is the uploaded
+    image size, which sets the schedule.
     """
-    total = total_steps(settings)
+    sigmas = ", ".join(f"{sigma:.10f}" for sigma in klein_sigmas(settings, *size))
     return {
         **_klein_nodes(
             settings,
             positive=["20", 0],
             latent=["9", 0],
-            schedule={"steps": total, "width": ["22", 0], "height": ["22", 1]},
-            sigmas=["16", 1],
+            sigmas={"class_type": "ManualSigmas", "inputs": {"sigmas": sigmas}},
         ),
         **load_image_nodes(image_name, mask_name),
         "7": {
@@ -169,15 +186,10 @@ def build_klein_inpaint_workflow(
             "class_type": "SetLatentNoiseMask",
             "inputs": {"samples": ["8", 0], "mask": ["6", 0]},
         },
-        "16": {
-            "class_type": "SplitSigmas",
-            "inputs": {"sigmas": ["15", 0], "step": total - settings.steps},
-        },
         "20": {
             "class_type": "ReferenceLatent",
             "inputs": {"conditioning": ["4", 0], "latent": ["7", 0]},
         },
-        "22": {"class_type": "GetImageSize", "inputs": {"image": ["5", 0]}},
     }
 
 
@@ -190,8 +202,10 @@ def build_klein_text_workflow(
             settings,
             positive=["4", 0],
             latent=["7", 0],
-            schedule={"steps": settings.steps, "width": width, "height": height},
-            sigmas=["15", 0],
+            sigmas={
+                "class_type": "Flux2Scheduler",
+                "inputs": {"steps": settings.steps, "width": width, "height": height},
+            },
         ),
         "7": {
             "class_type": "EmptyFlux2LatentImage",

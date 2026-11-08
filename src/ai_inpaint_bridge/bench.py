@@ -9,6 +9,7 @@ import textwrap
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from importlib import resources
 from pathlib import Path
 from typing import Protocol
 
@@ -53,7 +54,11 @@ Painter = Callable[[ImageDraw.ImageDraw, Sequence[Color]], None]
 
 @dataclass(frozen=True)
 class BenchCase:
-    """One scene to inpaint: canvas, selection box (left, top, right, bottom), prompt."""
+    """One scene to inpaint: canvas, selection box (left, top, right, bottom), prompt.
+
+    sprite, when given, names a PNG of bench_sprites pasted on the canvas
+    before paint draws on it.
+    """
 
     name: str
     prompt: str
@@ -61,6 +66,7 @@ class BenchCase:
     selection: Box
     paint: Painter
     denoise: float = 1.0
+    sprite: str = ""
 
 
 @dataclass(frozen=True)
@@ -145,6 +151,33 @@ BENCH_CASES: tuple[BenchCase, ...] = (
     BenchCase("sword", "steel sword, vertical", (32, 32), (13, 4, 19, 28), _nothing),
     BenchCase("rock", "mossy rock", (32, 32), (6, 10, 26, 28), _rock, denoise=0.6),
     BenchCase("rock-cut", "mossy rock", (32, 32), (16, 10, 28, 28), _rock, denoise=0.8),
+    BenchCase(
+        "knight-cape",
+        "knight with a red cape",
+        (32, 32),
+        (8, 8, 25, 30),
+        _nothing,
+        denoise=0.8,
+        sprite="knight.png",
+    ),
+    BenchCase(
+        "knight-glasses",
+        "knight wearing black sunglasses",
+        (32, 32),
+        (12, 1, 21, 9),
+        _nothing,
+        denoise=0.8,
+        sprite="knight.png",
+    ),
+    BenchCase(
+        "knight-sword",
+        "knight holding a sword in his left hand",
+        (32, 32),
+        (19, 8, 31, 30),
+        _nothing,
+        denoise=0.8,
+        sprite="knight.png",
+    ),
 )
 
 KNIGHT = "top-down view, a knight character with a blue cape"
@@ -181,6 +214,12 @@ def render_case(
 ) -> tuple[Image.Image, Image.Image]:
     """Return the region around the selection and its mask, as the extension sends them."""
     canvas = Image.new("RGBA", case.size, (0, 0, 0, 0))
+    if case.sprite:
+        source = resources.files("ai_inpaint_bridge").joinpath(
+            "bench_sprites", case.sprite
+        )
+        with source.open("rb") as file:
+            canvas.alpha_composite(Image.open(file).convert("RGBA"))
     case.paint(ImageDraw.Draw(canvas), palette)
     left, top, right, bottom = case.selection
     region = (

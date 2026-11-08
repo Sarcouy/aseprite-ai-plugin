@@ -30,7 +30,7 @@ Par défaut, la retouche utilise FLUX.2 klein 4B distillé (`--model klein-4b`, 
 
 - le latent de l'image reçoit un masque de bruit (`SetLatentNoiseMask`) et l'image d'origine est donnée en référence au prompt (`ReferenceLatent`) ;
 - 4 étapes, CFG 1, `euler`, prompt préfixé par `pixel art` (sans le déclencheur de la LoRA de SD 1.5) ;
-- une force de modification inférieure à 100 % échantillonne les 4 dernières étapes d'un planning de 4 / force étapes ; une force nulle est refusée.
+- la force de modification fixe le point de départ du planning de FLUX.2 : à 100 %, le planning complet ; en dessous, le modèle part d'une image partiellement bruitée. Le pont calcule lui-même les niveaux de bruit (`ManualSigmas`), si bien que chaque force échantillonne 4 étapes, dure le même temps et donne un résultat distinct ; une force nulle est refusée.
 
 Pourquoi klein (planches et détail dans le [compte rendu de l'issue 6](https://github.com/Sarcouy/aseprite-ai-plugin/issues/6#issuecomment-6632860704)) :
 
@@ -91,7 +91,7 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
 2. Ouvrir un sprite (RGB ou indexé) et sélectionner une zone.
 3. **Edit > AI > Inpaint Selection**, saisir :
    - un prompt en anglais ;
-   - la force de modification (100 % = la zone est entièrement redessinée) ;
+   - la force de modification (100 % = la zone est entièrement redessinée ; avec klein, garder au moins 80 % pour changer la matière d'un dessin existant) ;
    - l'utilisation ou non de la palette du sprite (toujours utilisée en mode indexé) ;
    - le nombre de variantes (1 à 8) ;
    - la sortie : `New layer` (nouveau calque `AI inpaint`) ou `Active layer` (le calque actif est modifié, les pixels transparents du résultat effacent l'original ; sur un calque de fond, ils prennent la couleur d'arrière-plan, comme avec la gomme).
@@ -131,7 +131,37 @@ Paramètres : `backend` (`invert` ou `comfyui`), `mode` (`rgb` ou `indexed`), `v
 
 `ai-inpaint-bench` génère des cas fixes en palette DB32, avec une seed fixe, et produit une planche avec une ligne par cas. ComfyUI doit tourner.
 
-Cas de retouche : 7 scènes (potion, coffre, slime, sapin, épée, retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection). La ligne montre la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. `--denoise` impose une même force de modification à ces 7 cas (entre 0 exclu et 1).
+Cas de retouche : 10 scènes.
+
+- Dessin dans une zone vide : potion, coffre, slime, sapin, épée.
+- Retouche d'un rocher entier ou d'une moitié de rocher, pour vérifier la jonction avec le dessin hors sélection.
+- Retouche d'un chevalier 32×32 (`bench_sprites/knight.png`, dessiné par klein) à 80 % : cape rouge (`knight-cape`), lunettes noires (`knight-glasses`), épée tenue dans la main (`knight-sword`).
+
+La ligne montre la région d'origine puis chaque variante, avec la part des pixels sélectionnés modifiés. `--denoise` impose une même force de modification à ces 10 cas (entre 0 exclu et 1).
+
+Retouche d'un dessin existant avec klein : ajouter de la mousse au rocher (« mossy rock », [issue 7](https://github.com/Sarcouy/aseprite-ai-plugin/issues/7)). Une variante est comptée réussie si au moins 8 % des pixels opaques sélectionnés sont verts (teinte de 55 à 170°, saturation au-dessus de 0,25) et si la silhouette recouvre celle d'origine à 90 % (IoU de l'alpha). Variantes réussies sur 4, aux seeds 1000, 2000 et 3000 (les lignes marquées \* ont été mesurées avant la force continue, à un niveau de bruit de départ de 0,91 au lieu de 0,92 pour 60 %) :
+
+| Réglage | `rock` (rocher entier) | `rock-cut` (moitié droite) |
+|---|---|---|
+| Force 60 % (`rock`), 80 % (`rock-cut`) | 0, 2, 0 | 1, 2, 1 |
+| Force 80 % | 3, 3, 2 | 1, 2, 1 |
+| Force 100 % | forme perdue (blocs carrés) | 2, 1 sur 2 seeds, silhouette souvent débordante |
+| CFG 2 \* | 0, 2 sur 2 seeds | 3, 2 sur 2 seeds |
+| Consigne « add green moss patches on the rock » \* | 0, 1 sur 2 seeds | 1, 0 sur 2 seeds |
+| Sans l'image en référence (`ReferenceLatent`) \* | 2, 2 sur 2 seeds | 0, 0 sur 2 seeds, silhouette perdue |
+| klein base \* | 0, 0 sur 2 seeds | 0, 0 sur 2 seeds |
+
+Le niveau de bruit de départ décide presque seul : autour de 0,92 (force 60 %), klein recopie l'image de référence ; autour de 0,97 (force 80 %), il ajoute la matière demandée en gardant la forme ; à 0,98 et au-delà, la forme commence à se perdre. Niveau de bruit de départ selon la force, pour une image de 512×512 : 30 % → 0,77, 50 % → 0,88, 60 % → 0,92, 70 % → 0,95, 80 % → 0,97, 90 % → 0,99, 100 % → 1.
+
+Retouche du chevalier à 80 %, seeds 1000 et 2000, 4 variantes :
+
+| Cas | Résultat |
+|---|---|
+| `knight-cape` | cape rouge sur 4 variantes sur 4 aux deux seeds, silhouette gardée ; quelques touches orange |
+| `knight-glasses` | bandeau noir sur les yeux sur 2 variantes sur 4 (seed 1000), 1 à 2 (seed 2000) ; à 32 px, des lunettes se réduisent à ce bandeau |
+| `knight-sword` | épée ajoutée sur 3 variantes sur 4 (seed 1000) et 4 sur 4 (seed 2000), le plus souvent en diagonale depuis la main |
+
+Pour ajouter un objet à côté d'un personnage, le cadrage compte : l'extension n'envoie que la sélection et une marge (8 px par défaut). Avec le chevalier entier envoyé (même seed, même force), klein n'ajoute aucune épée et recopie l'image de référence. Dans ce même essai sur le chevalier entier, la cape et les lunettes changent peu à 60 %, comme le rocher.
 
 Cas générés depuis le prompt seul, pour les futures tâches :
 
@@ -241,7 +271,7 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - **Cancel** arrête le processus lancé par la commande du pont : elle doit être le chemin direct de `ai-inpaint-bridge` (celui écrit par le script d'installation). Avec une commande intermédiaire comme `poetry run ai-inpaint-bridge`, seule celle-ci serait arrêtée et la génération continuerait.
 - Le modèle part de l'image au lancement : les retouches faites pendant la génération ne sont pas vues par le modèle, mais le résultat s'applique par-dessus.
 - Le résultat varie encore d'une seed à l'autre : environ 3 variantes sur 4 sont utilisables sur le banc. La fenêtre de choix barre en rouge les variantes qui changent moins de 5 % des pixels sélectionnés.
-- La retouche d'un dessin existant (force de modification à 60 %) suit mal le prompt : sur le banc, « mossy rock » ajoute de la mousse à 0 à 2 variantes sur 4 avec klein, jamais avec SD 1.5.
+- La retouche d'un dessin existant ne suit le prompt qu'à partir de 80 % de force avec klein : à 60 %, « mossy rock » n'ajoute presque jamais de mousse ; à 80 %, 2 à 3 variantes sur 4 en ont pour un rocher entier. Retoucher une moitié de dessin reste fragile (1 à 2 variantes sur 4) et la jonction avec la partie non sélectionnée se voit. SD 1.5 n'ajoute jamais de mousse.
 - En sortie `New layer`, le calque `AI inpaint` se superpose à l'original : un pixel rendu transparent n'efface pas ce qu'il y a dessous. Utiliser `Active layer` pour effacer.
 - Le modèle reçoit l'image aplatie de tous les calques visibles : en sortie `Active layer`, l'apparence des autres calques peut se retrouver dans le calque actif.
 - Une variante issue d'un batch ne peut pas être régénérée seule à partir de la seed.

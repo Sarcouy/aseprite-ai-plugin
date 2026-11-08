@@ -31,9 +31,19 @@ def test_client_queues_the_graphs_of_its_model(monkeypatch: pytest.MonkeyPatch) 
     """Inpainting and text to image both use the client's model."""
     queued: list[Workflow] = []
 
-    def build(image_name: str, mask_name: str, settings: InpaintSettings) -> Workflow:
+    def build(
+        image_name: str,
+        mask_name: str,
+        settings: InpaintSettings,
+        size: tuple[int, int],
+    ) -> Workflow:
         del image_name, mask_name
-        return {"1": {"class_type": "Inpaint", "inputs": {"seed": settings.seed}}}
+        return {
+            "1": {
+                "class_type": "Inpaint",
+                "inputs": {"seed": settings.seed, "size": size},
+            }
+        }
 
     def build_text(settings: InpaintSettings, width: int, height: int) -> Workflow:
         del settings
@@ -55,6 +65,6 @@ def test_client_queues_the_graphs_of_its_model(monkeypatch: pytest.MonkeyPatch) 
     client.generate_text(InpaintSettings(prompt="", seed=5), 64, 32)
 
     assert queued == [
-        {"1": {"class_type": "Inpaint", "inputs": {"seed": 5}}},
+        {"1": {"class_type": "Inpaint", "inputs": {"seed": 5, "size": (8, 8)}}},
         {"1": {"class_type": "Text", "inputs": {"size": [64, 32]}}},
     ]

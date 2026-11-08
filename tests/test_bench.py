@@ -89,6 +89,16 @@ def test_render_case_crops_the_selection_with_context() -> None:
     assert source.width >= right - left and source.height >= bottom - top
 
 
+def test_sprite_case_starts_from_the_stored_sprite() -> None:
+    """The knight cases paste the bench sprite before cropping the selection."""
+    case = next(case for case in BENCH_CASES if case.name == "knight-cape")
+    source, mask = render_case(case, PALETTE)
+
+    assert source.size == (32, 32)
+    assert source.getchannel("A").getbbox() is not None
+    assert mask.getbbox() == (8, 8, 25, 30)
+
+
 def test_bench_runs_every_case_and_renders_one_line_each() -> None:
     """Each case gets its prompt and the sheet grows with the cases."""
     generator = FlatGenerator()
