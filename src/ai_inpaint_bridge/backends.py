@@ -46,6 +46,17 @@ class TextGenerator(
         """Return settings.batch_size RGB images of the given size."""
 
 
+class ReferenceGenerator(
+    Protocol
+):  # pylint: disable=too-few-public-methods  # a protocol describing one callable capability
+    """Anything able to draw RGB images from the prompt and a reference image."""
+
+    def generate_reference(
+        self, reference: Image.Image, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """Return settings.batch_size RGB images of the given size."""
+
+
 def binarize_mask(mask: Image.Image) -> Image.Image:
     """Return a mode "1"-like L mask: 255 inside the selection, 0 outside."""
     return mask.convert("L").point(lambda value: 255 if value > MASK_THRESHOLD else 0)

@@ -50,8 +50,8 @@ local job, message = inpaint.generate(sprite, sprite.frames[1], options)
 assert(job, message)
 
 -- Background run, polled in a loop since no timer ticks in batch mode.
-local function wait_run(run)
-  for _ = 1, 1200 do
+local function wait_run(run, seconds)
+  for _ = 1, (seconds or 120) * 10 do
     local finished, result = inpaint.poll(run)
     if finished ~= nil then
       return finished, result
@@ -247,6 +247,83 @@ local alone = inpaint.apply_new_sprite(alone_job, nil)
 assert(#alone.layers == 1 and alone.layers[1].isGroup, "expected one group of variants")
 assert(#alone.layers[1].layers == variants, "expected one layer per variant")
 assert_in_palette(alone_job.previews[1], alone.palettes[1], "new sprite")
+
+-- Walk sheet: 16 frames tagged by direction and pose, in the active sprite
+-- or in a new one. klein base takes about a minute per variant.
+local walk_variants = backend == "comfyui" and 1 or variants
+local walk_options = {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "walk-sheet",
+  prompt = "a knight with a blue cape",
+  use_palette = true,
+  variants = walk_variants,
+}
+local walk_names = { "down", "left", "right", "up", "arms raised", "jump left", "jump right",
+                     "lying" }
+
+local function assert_walk_tags(sprite, first)
+  local tags = {}
+  for _, tag in ipairs(sprite.tags) do
+    tags[tag.name] = tag
+  end
+  for _, name in ipairs(walk_names) do
+    assert(tags[name], "missing tag " .. name)
+  end
+  assert(tags.down.fromFrame.frameNumber == first and tags.down.toFrame.frameNumber == first + 2,
+         "the down tag does not hold the first 3 new frames")
+  assert(tags.up.aniDir == AniDir.PING_PONG, "the walk does not loop back and forth")
+  assert(tags.lying.fromFrame.frameNumber == first + 15, "the last pose is not last")
+end
+
+local walk_sprite = character_sprite
+local frames_before = #walk_sprite.frames
+local walk_job = assert(inpaint.generate(walk_sprite, walk_sprite.frames[1], walk_options))
+assert(walk_job.walk and walk_job.region == Rectangle(0, 0, 128, 128), "unexpected walk region")
+assert(#walk_job.patches == walk_variants, "the walk run returned the wrong variant count")
+for i, preview in ipairs(walk_job.previews) do
+  assert_in_palette(preview, walk_sprite.palettes[1], "walk sheet " .. i)
+end
+inpaint.apply_walk(walk_sprite, walk_job, 1)
+assert(#walk_sprite.frames == frames_before + 16, "expected 16 new frames")
+assert_walk_tags(walk_sprite, frames_before + 1)
+local walk_layer = walk_sprite.layers[#walk_sprite.layers]
+assert(walk_layer.name == "AI walk", "unexpected layer: " .. walk_layer.name)
+local first_cel = walk_layer:cel(frames_before + 1)
+assert(first_cel and first_cel.image.colorMode == walk_sprite.colorMode,
+       "walk frame color mode differs")
+if backend == "invert" then
+  assert(first_cel.position == Point(-12, -12), "the walk frame is not centered: "
+         .. tostring(first_cel.bounds))
+end
+
+-- Edit mode: the active sprite is the character to animate, no description.
+local reference_options = {}
+for key, value in pairs(walk_options) do
+  reference_options[key] = value
+end
+reference_options.from_sprite = true
+reference_options.prompt = ""
+local reference_run = assert(inpaint.start(walk_sprite, walk_sprite.frames[1], reference_options))
+assert(reference_run.paths.reference and app.fs.isFile(reference_run.paths.reference),
+       "the reference sprite was not written")
+assert(reference_run.command:find("--reference", 1, true), "the reference is not sent")
+local reference_finished, reference_job = wait_run(reference_run, 600)
+assert(reference_finished, reference_job)
+assert(not app.fs.isFile(reference_run.paths.reference), "the reference file was left")
+assert(#reference_job.previews == walk_variants, "the edit run returned the wrong variant count")
+assert_in_palette(reference_job.previews[1], walk_sprite.palettes[1], "edited walk sheet")
+
+walk_options.new_sprite = true
+local walk_run = assert(inpaint.start(nil, nil, walk_options))
+local walk_finished, new_walk_job = wait_run(walk_run, 600)
+assert(walk_finished, new_walk_job)
+local walk = inpaint.apply_walk(nil, new_walk_job, nil)
+assert(walk.width == 32 and walk.height == 32, "the walk sprite has the wrong size")
+assert(#walk.frames == 16, "expected 16 frames")
+assert_walk_tags(walk, 1)
+assert(#walk.layers == 1 and walk.layers[1].isGroup, "expected one group of variants")
+assert(#walk.layers[1].layers == walk_variants, "expected one layer per variant")
 
 print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. (app.params.model or "default model")
       .. ", " .. variants .. " variants)")

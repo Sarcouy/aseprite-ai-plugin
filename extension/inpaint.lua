@@ -2,6 +2,15 @@ local inpaint = {}
 
 local LAYER_NAME = "AI inpaint"
 local CHARACTER_LAYER_NAME = "AI character"
+local WALK_LAYER_NAME = "AI walk"
+-- The walk sheet is GRID x GRID frames of WALK_FRAME pixels: each row holds
+-- WALK_STEPS walking frames of one direction, then one pose.
+local WALK_FRAME = 32
+local WALK_GRID = 4
+local WALK_STEPS = 3
+local WALK_DURATION = 0.15
+local WALK_TAGS = { "down", "left", "right", "up" }
+local POSE_TAGS = { "arms raised", "jump left", "jump right", "lying" }
 local WHITE = app.pixelColor.rgba(255, 255, 255, 255)
 local pc = app.pixelColor
 
@@ -113,6 +122,9 @@ local function bridge_command(options, paths)
   if paths.palette then
     cmd = cmd .. " --palette " .. shell_quote(paths.palette)
   end
+  if paths.reference then
+    cmd = cmd .. " --reference " .. shell_quote(paths.reference)
+  end
   return cmd
 end
 
@@ -154,7 +166,7 @@ local function temp_paths(with_input, with_palette, variants)
 end
 
 local function remove_files(paths)
-  for _, key in ipairs({ "input", "mask", "palette", "log", "pid", "status" }) do
+  for _, key in ipairs({ "input", "mask", "palette", "reference", "log", "pid", "status" }) do
     if paths[key] then
       os.remove(paths[key])
     end
@@ -191,15 +203,19 @@ local function character_region(sprite, size)
                    area.y + (area.height - size.height) // 2, size.width, size.height)
 end
 
--- The character task draws a whole region: its mask is fully selected and its
--- original fully transparent, so that an empty variant shows as unchanged. A
--- result going to a new sprite is not bound to the active sprite, which only
--- lends its palette.
-local function prepare_character(sprite, options)
+-- Tasks drawing from the prompt alone fill a whole region of the given size:
+-- its mask is fully selected and its original fully transparent, so that an
+-- empty variant shows as unchanged. A result going to a new sprite is not
+-- bound to the active sprite, which only lends its palette.
+local function prepare_drawing(sprite, options, size, layer_name, reference)
   local placed = sprite and not options.new_sprite and sprite or nil
-  local region = character_region(placed, options.size)
+  local region = character_region(placed, size)
   local use_palette = sprite and (options.use_palette or sprite.colorMode == ColorMode.INDEXED)
   local paths = temp_paths(false, use_palette, options.variants or 1)
+  if reference then
+    paths.reference = paths.output:gsub("output%.png$", "reference.png")
+    reference:saveAs(paths.reference)
+  end
   local mask = Image(region.width, region.height, ColorMode.RGB)
   mask:clear(WHITE)
   local palette
@@ -209,8 +225,36 @@ local function prepare_character(sprite, options)
   end
   return { sprite = placed, region = region, mask = mask,
            original = Image(region.width, region.height, ColorMode.RGB), paths = paths,
-           palette = palette, layer_name = CHARACTER_LAYER_NAME,
+           palette = palette, layer_name = layer_name,
            command = bridge_command(options, paths) }
+end
+
+-- The walk sheet comes back whole, its frames are cut when applied: in new
+-- frames of the active sprite, at the place a character would be drawn, or
+-- in a new sprite. With options.from_sprite, the character to animate is the
+-- frame of the active sprite, cut to the selection if any.
+local function prepare_walk(sprite, frame, options)
+  local reference
+  if options.from_sprite then
+    if not sprite then
+      return nil, "Open the sprite of the character to animate first."
+    end
+    local area = sprite.selection.isEmpty and sprite.bounds
+                 or sprite.selection.bounds:intersect(sprite.bounds)
+    if area.isEmpty then
+      return nil, "The selection is outside the canvas."
+    end
+    reference = render_region(sprite, frame, area)
+    if reference:isEmpty() then
+      return nil, "The character to animate is empty."
+    end
+  end
+  local side = WALK_GRID * WALK_FRAME
+  local run = prepare_drawing(sprite, options, Size(side, side), WALK_LAYER_NAME, reference)
+  run.origin = character_region(run.sprite, Size(WALK_FRAME, WALK_FRAME)).origin
+  run.region = Rectangle(0, 0, side, side)
+  run.walk = true
+  return run
 end
 
 -- Writes the region, its mask and the palette, and returns a run holding what
@@ -220,7 +264,10 @@ local function prepare(sprite, frame, options)
     return nil, "Grayscale sprites are not supported."
   end
   if options.task == "character" then
-    return prepare_character(sprite, options)
+    return prepare_drawing(sprite, options, options.size, CHARACTER_LAYER_NAME)
+  end
+  if options.task == "walk-sheet" then
+    return prepare_walk(sprite, frame, options)
   end
   local selection = sprite.selection
   if selection.isEmpty then
@@ -265,7 +312,8 @@ local function finish(run, ok, output)
     patches[i] = build_patch(run.sprite, result, run.mask)
   end
   return { region = run.region, mask = run.mask, original = run.original, previews = results,
-           patches = patches, layer_name = run.layer_name, palette = run.palette }
+           patches = patches, layer_name = run.layer_name, palette = run.palette,
+           walk = run.walk, origin = run.origin }
 end
 
 -- Runs the bridge and waits for it: Aseprite is frozen meanwhile. Used by the
@@ -430,6 +478,83 @@ function inpaint.apply_new_sprite(job, index)
     inpaint.apply_all_layers(sprite, sprite.frames[1], placed)
   end
   sprite:deleteLayer(first)
+  return sprite
+end
+
+-- Frame of the sheet cell (row, column) from 0, counted from the first new
+-- frame: the walking frames of every direction, then the poses.
+local function walk_frame_offset(row, column)
+  if column < WALK_STEPS then
+    return row * WALK_STEPS + column
+  end
+  return WALK_GRID * WALK_STEPS + row
+end
+
+local function add_walk_tags(sprite, first)
+  for row, name in ipairs(WALK_TAGS) do
+    local start = first + (row - 1) * WALK_STEPS
+    local tag = sprite:newTag(start, start + WALK_STEPS - 1)
+    tag.name = name
+    tag.aniDir = AniDir.PING_PONG
+  end
+  for row, name in ipairs(POSE_TAGS) do
+    local number = first + walk_frame_offset(row - 1, WALK_STEPS)
+    sprite:newTag(number, number).name = name
+  end
+end
+
+local function add_walk_layer(sprite, first, sheet, origin, name, parent)
+  local layer = sprite:newLayer()
+  layer.name = name
+  if parent then
+    layer.parent = parent
+  end
+  for row = 0, WALK_GRID - 1 do
+    for column = 0, WALK_GRID - 1 do
+      local cell = Rectangle(column * WALK_FRAME, row * WALK_FRAME, WALK_FRAME, WALK_FRAME)
+      sprite:newCel(layer, first + walk_frame_offset(row, column), Image(sheet, cell), origin)
+    end
+  end
+  return layer
+end
+
+-- Puts the frames of the chosen walk sheet, or of every sheet when index is
+-- nil, in new frames tagged by direction and pose, as a single undo step.
+-- Without a sprite they go to a new RGB sprite, which is returned.
+function inpaint.apply_walk(sprite, job, index)
+  local created = sprite == nil
+  local sheets, origin = job.patches, job.origin
+  if created then
+    sprite = Sprite(WALK_FRAME, WALK_FRAME, ColorMode.RGB)
+    sprite:setPalette(job.palette or previews_palette(job.previews))
+    sheets, origin = job.previews, Point(0, 0)
+  end
+  local count = WALK_GRID * WALK_GRID
+  local name = job.layer_name or WALK_LAYER_NAME
+  local default_layer = sprite.layers[1]
+  app.transaction(name, function()
+    local first = created and 1 or #sprite.frames + 1
+    for number = created and 2 or first, first + count - 1 do
+      sprite:newEmptyFrame(number)
+    end
+    for number = first, first + count - 1 do
+      sprite.frames[number].duration = WALK_DURATION
+    end
+    if index then
+      add_walk_layer(sprite, first, sheets[index], origin, name)
+    else
+      local group = sprite:newGroup()
+      group.name = name
+      for i = #sheets, 1, -1 do
+        local layer = add_walk_layer(sprite, first, sheets[i], origin, "Variant " .. i, group)
+        layer.isVisible = i == 1
+      end
+    end
+    add_walk_tags(sprite, first)
+  end)
+  if created then
+    sprite:deleteLayer(default_layer)
+  end
   return sprite
 end
 

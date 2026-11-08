@@ -11,6 +11,7 @@ from ai_inpaint_bridge.klein import (
     KLEIN_UNET,
     KLEIN_SETTINGS,
     build_klein_inpaint_workflow,
+    build_klein_reference_workflow,
     build_klein_text_workflow,
     klein_prompt,
     klein_sigmas,
@@ -146,3 +147,27 @@ def test_distilled_model_has_no_lora_by_default() -> None:
     assert "23" not in workflow
     assert workflow["1"]["inputs"]["unet_name"] == KLEIN_UNET
     assert workflow["13"]["class_type"] == "ConditioningZeroOut"
+
+
+def test_reference_workflow_adds_the_image_to_the_prompt_only() -> None:
+    """Edit graph of klein base: empty latent, reference on the positive only."""
+    settings = replace(KLEIN_4B_BASE.settings, prompt="a knight", batch_size=2)
+
+    workflow = build_klein_reference_workflow("ref.png", settings, 512, 512)
+
+    assert workflow["5"]["inputs"] == {"image": "ref.png"}
+    assert workflow["9"]["inputs"]["pixels"] == ["5", 0]
+    assert workflow["7"]["inputs"]["batch_size"] == 2
+    assert workflow["19"]["inputs"]["latent_image"] == ["7", 0]
+    assert workflow["20"]["inputs"] == {"conditioning": ["4", 0], "latent": ["9", 0]}
+    assert workflow["18"]["inputs"]["positive"] == ["20", 0]
+    assert workflow["18"]["inputs"]["negative"] == ["13", 0]
+    assert workflow["13"]["class_type"] == "CLIPTextEncode"
+
+
+def test_reference_workflow_with_cfg_1_zeroes_the_referenced_prompt() -> None:
+    """Without guidance the negative stays the zeroed positive."""
+    workflow = build_klein_reference_workflow("ref.png", KLEIN_SETTINGS, 512, 512)
+
+    assert workflow["13"]["inputs"]["conditioning"] == ["20", 0]
+    assert workflow["18"]["inputs"]["negative"] == ["13", 0]

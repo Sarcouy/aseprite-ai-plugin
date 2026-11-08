@@ -52,6 +52,7 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
 
 WorkflowBuilder = Callable[[str, str, InpaintSettings, tuple[int, int]], Workflow]
 TextWorkflowBuilder = Callable[[InpaintSettings, int, int], Workflow]
+ReferenceWorkflowBuilder = Callable[[str, InpaintSettings, int, int], Workflow]
 
 
 def load_image_nodes(image_name: str, mask_name: str) -> Workflow:
@@ -204,13 +205,16 @@ class ModelProfile:
     """Base model: its ComfyUI graphs and its default settings.
 
     build_inpaint rewrites the masked area of an uploaded image of the given
-    size, build_text draws from the prompt alone at the given size.
+    size, build_text draws from the prompt alone at the given size and
+    build_reference, when the model has one, draws at the given size from
+    the prompt and an uploaded reference image.
     """
 
     name: str
     settings: InpaintSettings
     build_inpaint: WorkflowBuilder
     build_text: TextWorkflowBuilder
+    build_reference: ReferenceWorkflowBuilder | None = None
 
 
 SD15_INPAINT = ModelProfile(
@@ -261,6 +265,16 @@ class ComfyUIClient:
     ) -> list[Image.Image]:
         """Draw from the prompt alone, return the decoded images in batch order."""
         return self._run(self._model.build_text(settings, width, height))
+
+    def generate_reference(
+        self, reference: Image.Image, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """Draw from the prompt and the reference image, in batch order."""
+        build = self._model.build_reference
+        if build is None:
+            raise ComfyUIError(f"{self._model.name} cannot draw from a reference image")
+        name = self._upload(reference, "aseprite-ai-inpaint-reference.png")
+        return self._run(build(name, settings, width, height))
 
     def _run(self, workflow: Workflow) -> list[Image.Image]:
         prompt_id = self._queue(workflow)

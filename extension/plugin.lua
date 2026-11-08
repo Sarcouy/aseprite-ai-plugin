@@ -11,15 +11,22 @@ local DEFAULT_PREFERENCES = {
   character_prompt = "",
   character_size = "32",
   character_output = "New layer",
+  walk_prompt = "",
+  walk_output = "New sprite",
+  walk_from_sprite = false,
+  walk_variants = 2,
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
 local CHARACTER_SIZES = { "16", "24", "32", "48", "64" }
+local WALK_OUTPUTS = { "New sprite", "New frames" }
 local BACKENDS = { "comfyui", "invert" }
 -- Models of the bridge's inpaint task, the first one is its default.
 local INPAINT_MODELS = { "klein-4b", "sd15-inpaint" }
 local MAX_ALERT_LINES = 15
 local MAX_VARIANTS = 8
+-- klein base was only measured up to a batch of 4 on 4 GB of VRAM.
+local MAX_WALK_VARIANTS = 4
 local PREVIEW_COLUMNS = 4
 local PREVIEW_CELL = 160
 local PREVIEW_GAP = 8
@@ -129,6 +136,38 @@ local function ask_character(prefs)
   return true
 end
 
+-- Returns false when the user cancels.
+local function ask_walk(prefs)
+  local dlg = Dialog("AI Walk Sheet")
+  dlg:check{ id = "from_sprite", text = "Animate the active sprite (or its selection)",
+             selected = app.sprite ~= nil and prefs.walk_from_sprite, enabled = app.sprite ~= nil }
+  dlg:entry{ id = "prompt", label = "Description", text = prefs.walk_prompt, focus = true }
+  dlg:check{ id = "use_palette", text = "Use the sprite palette", selected = prefs.use_palette }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_WALK_VARIANTS,
+              value = math.min(prefs.walk_variants, MAX_WALK_VARIANTS) }
+  dlg:combobox{ id = "output", label = "Output", option = prefs.walk_output,
+                options = WALK_OUTPUTS }
+  dlg:label{ text = "About 1 min per variant." }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  if dlg.data.prompt:match("^%s*$") and not dlg.data.from_sprite then
+    app.alert{ title = "AI", text = "Describe the character to animate." }
+    return false
+  end
+  if app.sprite then
+    prefs.walk_from_sprite = dlg.data.from_sprite
+  end
+  prefs.walk_prompt = dlg.data.prompt
+  prefs.use_palette = dlg.data.use_palette
+  prefs.walk_variants = dlg.data.variants
+  prefs.walk_output = dlg.data.output
+  return true
+end
+
 local function common_options(prefs)
   return {
     bridge_command = prefs.bridge_command,
@@ -158,6 +197,25 @@ local function character_options(prefs)
   options.prompt = prefs.character_prompt ~= "" and prefs.character_prompt or "a knight"
   options.size = Size(size, size)
   options.new_sprite = character_output(prefs) == "New sprite"
+  return options
+end
+
+-- Without a sprite open the walk sheet always goes to a new sprite.
+local function walk_output(prefs)
+  return app.sprite and prefs.walk_output or "New sprite"
+end
+
+local function walk_options(prefs)
+  local options = common_options(prefs)
+  if prefs.backend == "comfyui" then
+    options.variants = math.min(prefs.walk_variants, MAX_WALK_VARIANTS)
+  end
+  options.from_sprite = app.sprite ~= nil and prefs.walk_from_sprite
+  options.prompt = prefs.walk_prompt
+  if options.prompt == "" and not options.from_sprite then
+    options.prompt = "a knight"
+  end
+  options.new_sprite = walk_output(prefs) == "New sprite"
   return options
 end
 
@@ -217,7 +275,7 @@ local function pick_variant(job)
   local function update_label()
     local text = "Variant " .. selected .. " of " .. #job.previews
     if unchanged[selected] then
-      text = text .. (job.layer_name == "AI character" and " (empty)" or " (nearly unchanged)")
+      text = text .. (job.layer_name == "AI inpaint" and " (nearly unchanged)" or " (empty)")
     end
     dlg:modify{ id = "current", text = text }
   end
@@ -289,7 +347,11 @@ local function apply_job(sprite, frame, job, target)
   if #job.patches > 1 then
     choice, index = pick_variant(job)
   end
-  if not sprite then
+  if job.walk then
+    if choice then
+      inpaint.apply_walk(sprite, job, choice == "one" and index or nil)
+    end
+  elseif not sprite then
     if choice then
       inpaint.apply_new_sprite(job, choice == "one" and index or nil)
     end
@@ -327,6 +389,18 @@ local function task_entries()
       ask = ask_character,
       options = character_options,
       output = character_output,
+      start = inpaint.start,
+    },
+    {
+      name = "walk-sheet",
+      command_id = "AiGenerateWalkSheet",
+      title = "Generate Walk Sheet",
+      enabled = function()
+        return running == nil
+      end,
+      ask = ask_walk,
+      options = walk_options,
+      output = walk_output,
       start = inpaint.start,
     },
   }

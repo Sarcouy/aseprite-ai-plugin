@@ -12,6 +12,7 @@ from ai_inpaint_bridge.bench import (
     CELL,
     DB32_PATH,
     SPRITE_CASES,
+    Case,
     SpriteCase,
     _parse_args,
     load_gpl,
@@ -22,6 +23,7 @@ from ai_inpaint_bridge.bench import (
 )
 from ai_inpaint_bridge.comfyui import InpaintSettings
 from ai_inpaint_bridge.tasks.character import character_prompt
+from ai_inpaint_bridge.tasks.walk_sheet import walk_prompt
 
 PALETTE = [(i * 8, 255 - i * 8, i * 4) for i in range(32)]
 DRAWN_KEYS = {
@@ -100,22 +102,24 @@ def test_sprite_case_starts_from_the_stored_sprite() -> None:
     assert mask.getbbox() == (8, 8, 25, 30)
 
 
+def expected_prompt(case: Case) -> str:
+    """Prompt sent for a case, framed by the task it goes through."""
+    if isinstance(case, SpriteCase) and case.character:
+        return character_prompt(case.prompt)
+    if isinstance(case, SpriteCase) and case.walk:
+        return walk_prompt(case.prompt)
+    return case.prompt
+
+
 def test_bench_runs_every_case_and_renders_one_line_each() -> None:
-    """Each case gets its prompt, framed for character cases, one line each."""
+    """Each case gets its prompt, framed for character and walk cases, one line each."""
     generator = FlatGenerator()
     settings = replace(InpaintSettings("", 1), batch_size=2)
 
     rows = run_bench(ALL_CASES, settings, generator, PALETTE)
     sheet = render_sheet(rows, "title")
 
-    assert generator.prompts == [
-        (
-            character_prompt(case.prompt)
-            if isinstance(case, SpriteCase) and case.character
-            else case.prompt
-        )
-        for case in ALL_CASES
-    ]
+    assert generator.prompts == [expected_prompt(case) for case in ALL_CASES]
     assert all(len(row.variants) == 2 for row in rows)
     assert sheet.height > len(ALL_CASES) * CELL
 
@@ -134,6 +138,9 @@ def test_sprite_cases_are_drawn_at_their_size_on_a_transparent_background() -> N
         assert row.original is None and row.mask is None
         assert sprite.size == case.size
         assert sprite.getpixel((0, 0)) == (0, 0, 0, 0)
+        if case.walk:
+            assert sprite.getchannel("A").getbbox() is not None
+            continue
         center = (case.size[0] // 2, case.size[1] // 2)
         assert sprite.getpixel(center) == (*PALETTE[0], 255)
 

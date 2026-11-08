@@ -218,6 +218,45 @@ def build_klein_text_workflow(
     }
 
 
+def build_klein_reference_workflow(
+    image_name: str, settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: text to image with the uploaded image as reference.
+
+    The encoded image is added as a reference latent to the prompt only: on
+    the negative prompt too, the guidance would cancel it out and the
+    character would lose its look.
+    """
+    return {
+        **_klein_nodes(
+            settings,
+            positive=["20", 0],
+            latent=["7", 0],
+            sigmas={
+                "class_type": "Flux2Scheduler",
+                "inputs": {"steps": settings.steps, "width": width, "height": height},
+            },
+        ),
+        "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "7": {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": settings.batch_size,
+            },
+        },
+        "9": {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": ["5", 0], "vae": ["3", 0]},
+        },
+        "20": {
+            "class_type": "ReferenceLatent",
+            "inputs": {"conditioning": ["4", 0], "latent": ["9", 0]},
+        },
+    }
+
+
 KLEIN_4B = ModelProfile(
     name="klein-4b",
     settings=KLEIN_SETTINGS,
@@ -230,4 +269,12 @@ KLEIN_4B_BASE = ModelProfile(
     settings=replace(KLEIN_SETTINGS, checkpoint=KLEIN_BASE_UNET, steps=20, cfg=5.0),
     build_inpaint=build_klein_inpaint_workflow,
     build_text=build_klein_text_workflow,
+    build_reference=build_klein_reference_workflow,
+)
+
+SVNTAX_LORA = "klein4b-base-pixel-4walk-svntax.safetensors"
+KLEIN_4B_BASE_WALK = replace(
+    KLEIN_4B_BASE,
+    name="klein-4b-base-svntax",
+    settings=replace(KLEIN_4B_BASE.settings, lora=SVNTAX_LORA),
 )

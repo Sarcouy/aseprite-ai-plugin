@@ -148,8 +148,8 @@ def to_sprite_pixels(
     return small
 
 
-def foreground_box(image: Image.Image, key: Color) -> tuple[int, int, int, int] | None:
-    """Bounding box of the pixels far from the key color, None when there is none."""
+def foreground_mask(image: Image.Image, key: Color) -> Image.Image:
+    """L mask, 255 on the pixels far from the key color, 0 on the background."""
     rgb = image.convert("RGB")
     tolerance = KEY_TOLERANCE**2
     mask = Image.new("L", rgb.size, 0)
@@ -159,7 +159,12 @@ def foreground_box(image: Image.Image, key: Color) -> tuple[int, int, int, int] 
             for p in pixel_tuples(rgb)
         ]
     )
-    return mask.getbbox()
+    return mask
+
+
+def foreground_box(image: Image.Image, key: Color) -> tuple[int, int, int, int] | None:
+    """Bounding box of the pixels far from the key color, None when there is none."""
+    return foreground_mask(image, key).getbbox()
 
 
 def fit_to_sprite(

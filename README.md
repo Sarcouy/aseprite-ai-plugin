@@ -1,10 +1,10 @@
 # aseprite-ai-inpaint
 
-Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, ou dessine un personnage depuis une description, avec un modèle de diffusion local (ComfyUI).
+Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, dessine un personnage depuis une description ou l'anime dans une planche de marche en 4 directions, avec un modèle de diffusion local (ComfyUI).
 
 ## État
 
-Itération 7 : tâche `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) en plus de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
+Itération 8 : tâche `walk-sheet` (planche de marche en 4 directions découpée en frames et tags Aseprite, **Edit > AI > Generate Walk Sheet**), en plus de la tâche `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) et de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ SD 1.5 (`--model sd15-inpaint`) reste disponible en repli : UNet de `sd-v1-5-inp
 
 ### Tâches
 
-Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut) ou `character` (voir [Génération de personnage](#génération-de-personnage)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut.
+Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut), `character` (voir [Génération de personnage](#génération-de-personnage)) ou `walk-sheet` (voir [Planche de marche](#planche-de-marche)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
@@ -101,6 +101,27 @@ flowchart LR
 
 Aucune LoRA n'est utilisée, contrairement à ce que proposait l'issue : la LoRA Limbicnation n'a pas d'effet visible avec klein distillé et la LoRA svntax ne produit que des planches de marche, sur klein base (voir [Modèles récents sur 4 Go de VRAM](#modèles-récents-sur-4-go-de-vram)).
 
+### Planche de marche
+
+La tâche `walk-sheet` dessine la planche de marche d'un personnage, décrit par `--prompt` ou dessiné dans un sprite (`--reference`, mode édition). Elle utilise klein base avec la LoRA [svntax](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1) (`--model klein-4b-base-svntax` : 20 étapes, CFG 5), seule combinaison qui dessine une planche exploitable (voir le banc).
+
+```mermaid
+flowchart LR
+    A["Description<br/>ou sprite de référence"] --> B["Prompt de la fiche svntax<br/>+ fond couleur clé"]
+    B --> C["klein base + LoRA svntax<br/>1 planche 512×512 par variante"]
+    C --> D["Lignes puis colonnes<br/>séparées aux bandes de fond"]
+    D --> E["16 frames 32×32 :<br/>même facteur, ligne de pieds commune"]
+    E --> F["Extension : 12 frames de marche<br/>+ 4 poses, tags par direction"]
+```
+
+1. Le prompt reprend mot pour mot celui de la fiche de la LoRA : `A pixel art spritesheet of <description>. The spritesheet is a 4 by 4 grid of four rows of frames - first row is 3 walking frames facing down and 1 frame both arms raised, second row is 3 walking frames facing left and 1 frame jumping left, third row is 3 walking frames facing right and 1 frame jumping right, fourth row is 3 walking frames back view facing up and 1 frame lying on floor.` La LoRA a été entraînée sur ce format : chaque ligne contient 3 frames de marche puis une pose (bras levés, saut à gauche, saut à droite, couché). Demander 4 frames de marche donne une 4e frame qui s'écarte du cycle.
+2. La planche est demandée sur la couleur clé (`plain magenta background`). Sans elle, klein dessine sur fond blanc et les reflets clairs du personnage (bande du casque, blanc des yeux) deviennent transparents.
+3. Les lignes sont séparées au milieu des bandes de fond horizontales, puis les colonnes de chaque ligne au milieu des bandes verticales. Une planche décalée par rapport aux quarts de l'image est donc découpée entre ses sprites ; sans 4 bandes nettes, le découpage retombe sur les quarts.
+4. Toutes les frames sont réduites du même facteur (4, plus si un sprite ne tient pas dans 32 px moins 1 px de marge), pour que le personnage garde sa taille d'une frame à l'autre. Les frames d'une ligne partagent la même ligne de pieds et sont centrées sur le pas régulier de la grille, décalé de la médiane des écarts des sprites : une cape ou un bras qui élargit une frame ne fait pas bouger le corps.
+5. Comme pour les autres tâches, le résultat est ramené à la palette, les pixels proches du fond deviennent transparents et chaque bloc est réduit par vote majoritaire. Le pont renvoie une planche 128×128 par variante.
+
+En mode édition, le sprite de référence est rogné à ses pixels opaques, agrandi sans lissage du plus grand facteur entier qui tient dans 512 px et centré sur la couleur clé. Il est ajouté au prompt par un nœud `ReferenceLatent`, sur le prompt positif seulement. Le prompt devient `Create a pixel art spritesheet of the character in the image` (celui de la fiche), suivi de la description si elle est donnée, puis de la mise en page.
+
 ## Utilisation
 
 1. Démarrer ComfyUI (laisser le terminal ouvert) :
@@ -130,7 +151,17 @@ Pour dessiner un personnage, **Edit > AI > Generate Character** (disponible sans
 
 La fenêtre de choix est la même que pour la retouche ; une variante vide y est barrée en rouge.
 
-Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (la tâche `character` y dessine un carré de la première couleur de la palette).
+Pour animer un personnage, **Edit > AI > Generate Walk Sheet** (disponible sans sprite ouvert), puis saisir :
+
+- **Animate the active sprite (or its selection)** : le personnage à animer est la frame courante du sprite actif, réduite à la sélection s'il y en a une (mode édition). La description devient facultative mais reste conseillée : sans elle, le modèle garde surtout les couleurs du personnage (voir le banc) ;
+- une description en anglais, par exemple `a knight with a blue cape` ;
+- l'utilisation ou non de la palette du sprite actif (toujours utilisée en mode indexé) ;
+- le nombre de variantes, de 1 à 4, 2 par défaut (sur une RTX 3050 Ti 4 Go, 1 à 1,8 min par variante depuis la description, 1,2 à 2,5 min en mode édition) ;
+- la sortie : `New sprite` (nouveau sprite RGB de 32×32) ou `New frames` (16 frames ajoutées après les dernières du sprite actif, dans un calque `AI walk`, centrées sur la sélection ou sur le canevas). Sans sprite ouvert, la sortie est toujours `New sprite`.
+
+Les 16 frames durent 150 ms. Les 12 premières sont la marche, 3 par direction, avec les tags `down`, `left`, `right` et `up` en aller-retour (1, 2, 3, 2…) : la frame du milieu est la pose debout entre deux pas. Les 4 dernières sont les poses, chacune avec son tag : `arms raised`, `jump left`, `jump right`, `lying`. **Keep all as layers** met chaque variante dans un calque du groupe `AI walk`, seule la première visible.
+
+Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (les tâches `character` et `walk-sheet` y dessinent des carrés de la première couleur de la palette).
 
 ## Développement
 
@@ -150,7 +181,7 @@ poetry run black --check .
 poetry run mypy src tests
 ```
 
-Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif). En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
+Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif, personnage et planche de marche dans le sprite actif ou dans un nouveau sprite, mode édition). Avec `backend=comfyui`, la planche de marche est générée avec une seule variante : le test dure plusieurs minutes. En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
 
 ```bash
 aseprite -b --script-param bridge="$(poetry env info -p)/bin/ai-inpaint-bridge" --script-param backend=invert --script-param mode=rgb --script-param variants=3 --script tests/roundtrip.lua
@@ -201,7 +232,7 @@ Cas générés depuis le prompt seul :
 | `knight-16`, `knight-32` | chevalier à cape bleue de la tâche `character`, 16×16 et 32×32 | sur fond transparent |
 | `cat-16`, `cat-32` | chat roux de la tâche `character`, 16×16 et 32×32 | sur fond transparent |
 | `grass-tile`, `wall-tile` | tile d'herbe et de mur, 16×16 | répétée 3×3 pour voir les raccords |
-| `knight-walk` | planche de marche 128×128 : 4 directions × 4 images de 32×32, prompt rédigé comme sur la fiche de la LoRA svntax | sur fond transparent |
+| `knight-walk` | planche de marche 128×128 de la tâche `walk-sheet` (chevalier à cape bleue) : 4 directions × 3 frames de marche + 1 pose | sur fond transparent |
 
 Les cas de personnage passent par le même code que la tâche `character` : leur prompt est la description, placée dans son gabarit. Les autres cas sont générés à 512 px puis réduits par vote majoritaire. Un sprite transparent est demandé sur une couleur clé citée dans le prompt. Le modèle ne fait que l'approcher : klein dessine « magenta » en rose plus ou moins rouge. Le fond retiré est donc la couleur médiane mesurée sur le bord de chaque image.
 
@@ -230,7 +261,7 @@ Une grille 4×4 (16 cases, 16×16) est bien dessinée par klein, mais pas toujou
 
 En 64×64 (seeds 1000 et 2000), la grille 2×2 et l'image seule recadrée donnent toutes deux 8 variantes lisibles sur 8 : l'image seule est plus détaillée (pelage nuancé, reflets de l'armure), la grille donne un dessin plus simple aux contours plus nets. La grille est gardée à toutes les tailles.
 
-Planche de marche (`knight-walk`, seed 1000, 4 variantes) selon le modèle et la LoRA [svntax](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), entraînée sur klein base :
+Planche de marche avant la tâche `walk-sheet` (seed 1000, 4 variantes, prompt de 4 frames de marche par ligne) selon le modèle et la LoRA [svntax](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), entraînée sur klein base :
 
 | Modèle | LoRA | Temps | Résultat |
 |--------|------|-------|----------|
@@ -239,9 +270,33 @@ Planche de marche (`knight-walk`, seed 1000, 4 variantes) selon le modèle et la
 | klein base | aucune | 203 s | grilles 3×3 ou 2×3, pas de directions |
 | klein base | svntax | 221 s | 4 variantes sur 4 en 4×4 : face, gauche, droite, dos dans l'ordre demandé ; poses de marche qui varient d'une image à l'autre, sans cycle régulier ; la 4e image de chaque ligne s'écarte souvent du reste, cape bleu-gris plutôt que bleue |
 
-Seul klein base avec la LoRA svntax produit une planche de marche exploitable, à reprendre à la main pour le cycle. C'est le meilleur candidat pour une future tâche de planche de marche, au prix de 221 s pour 4 variantes, environ 67 s pour une seule (voir le tableau des modèles).
+Seul klein base avec la LoRA svntax produit une planche de marche exploitable : c'est le modèle de la tâche `walk-sheet`.
 
-`--model` choisit le modèle : ceux de la retouche (klein distillé par défaut, `sd15-inpaint`) et `klein-4b-base`, réservé au banc (20 étapes, CFG 5, prompt négatif vide). Ses réglages s'appliquent, sauf ceux donnés en option. `--lora` ajoute une LoRA (fichier de `models/loras/` de ComfyUI), avec la force `--lora-strength` ; avec klein, elle ne s'applique qu'au modèle de diffusion. `--cases` limite la planche à quelques cas. Comparer deux réglages revient à comparer deux planches :
+Tâche `walk-sheet` (klein base + svntax, 4 variantes par essai, sur une RTX 3050 Ti 4 Go) :
+
+| Essai | Seeds | Temps (4 variantes) | Résultat |
+|-------|-------|---------------------|----------|
+| **description, prompt de la fiche, fond magenta (retenu)** | 1000, 2000 | 216 à 428 s | **8 planches sur 8** au bon format : 3 frames de marche + la pose demandée sur chaque ligne, directions dans l'ordre ; même chevalier d'une direction à l'autre (casque, cape bleue) ; visage teinté d'orange par le fond |
+| description, prompt de la fiche, sans fond demandé | 1000, 2000 | 215 à 361 s | 8 sur 8 au bon format, couleurs plus naturelles, mais fond blanc : bande du casque et yeux troués une fois le fond retiré |
+| référence ×4 (taille des frames), sur les deux prompts | 1000 | 400 à 600 s | format suivi, mais le personnage n'est pas gardé : le chevalier devient un garçon brun ou en capuche verte, le gobelin un humanoïde vert sans oreilles pointues |
+| référence ×16 (512 px), sur les deux prompts | 1000 | 670 s | gobelin : oreilles un peu mieux gardées, toujours sans ventre ni pantalon |
+| référence ×4, LoRA à 0,7 | 1000 | 630 s | aucun gain |
+| référence ×4 + description du gobelin | 1000 | 630 s | gobelin reconnaissable : oreilles pointues, pantalon brun |
+| référence ×4, prompt positif seul | 1000 | 570 s | chevalier en capuche bleu-vert, sans casque |
+| **référence ×16, prompt positif seul (retenu)** | 1000, 2000 | 295 à 530 s | **chevalier gardé sur 8 variantes sur 8** sans description : casque, plumet, cape bleue |
+| **idem + description du gobelin (retenu)** | 1000 | 590 s | **gobelin reconnaissable sur 4 variantes sur 4** : oreilles pointues, peau verte ; pantalon brun réduit à un pagne sombre |
+
+Mesures sur les 26 planches découpées de ces essais (104 lignes par vue), frames de marche :
+
+- la tête ne bouge pas d'une frame à l'autre (écart de 0 px, 0,5 px sur quelques lignes) et les pieds varient d'un pixel, celui du pas ;
+- vues de face et de dos : dans 101 lignes sur 104, la frame du milieu a les deux pieds au même niveau et les deux autres lèvent chacune un pied différent ;
+- vues de profil : dans 82 lignes sur 104, la frame du milieu a l'écart de jambes le plus étroit (18 égalités, 4 contraires).
+
+La frame du milieu est donc la pose debout et les deux autres les pas : la marche boucle en aller-retour 1, 2, 3, 2. Le facteur de réduction est resté à 4 sauf sur 1 planche sur environ 60, où des bras levés trop hauts l'ont porté à 5 pour toute la planche.
+
+Ce qui a été mesuré : la référence à ×4 perd le personnage, qu'elle soit sur les deux prompts ou sur le positif seul ; à ×16 sur le positif seul, elle le garde. À ×16 sur les deux prompts, seul le gobelin sans description a été essayé, avec un gain faible. L'hypothèse retenue est qu'avec une CFG de 5, la référence présente aussi dans le prompt négatif s'annule en partie ; elle n'a pas été isolée sur le chevalier. Le graphe d'édition publié avec la LoRA met la référence sur les deux prompts, agrandie à 1 mégapixel ; il n'a pas été mesuré ici, une référence de 1024 px allongeant encore la génération sur 4 Go.
+
+`--model` choisit le modèle : ceux de la retouche (klein distillé par défaut, `sd15-inpaint`), `klein-4b-base` (20 étapes, CFG 5, prompt négatif vide) et `klein-4b-base-svntax`, le même avec la LoRA svntax, modèle de la planche de marche (`--model klein-4b-base-svntax --cases knight-walk`). Ses réglages s'appliquent, sauf ceux donnés en option. `--lora` ajoute une LoRA (fichier de `models/loras/` de ComfyUI), avec la force `--lora-strength` ; avec klein, elle ne s'applique qu'au modèle de diffusion. `--cases` limite la planche à quelques cas. Comparer deux réglages revient à comparer deux planches :
 
 ```bash
 poetry run ai-inpaint-bench --output bench.png
@@ -310,9 +365,13 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - `diffusion_models/flux-2-klein-base-4b-fp8.safetensors` ([black-forest-labs/FLUX.2-klein-base-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8))
 - `vae/flux2-vae.safetensors` ([Comfy-Org/Flux-2-Klein-4B](https://huggingface.co/Comfy-Org/Flux-2-Klein-4B))
 - `diffusion_models/z_image_turbo_int8_convrot.safetensors`, `text_encoders/qwen_3_4b_fp8_mixed.safetensors` et `qwen_3_4b_fp4_mixed.safetensors`, `vae/z-image-ae.safetensors` (`ae.safetensors` renommé) ([Comfy-Org/Z-Image-Turbo](https://huggingface.co/Comfy-Org/Z-Image-Turbo))
-- `loras/klein4b-base-pixel-4walk-svntax.safetensors` (LoRA de [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), renommée)
+- `loras/klein4b-base-pixel-4walk-svntax.safetensors` (`pixel_4walk_small_flux2_klein_base_4b_v1.safetensors` de [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), version à 3000 étapes que la fiche conseille pour les personnages humanoïdes, renommée)
 
 ## Limites connues
+
+- La planche de marche est lente sur 4 Go de VRAM : 1 à 1,8 min par variante depuis la description, 1,2 à 2,5 min en mode édition. Elle est limitée à 4 variantes dans l'extension : klein base n'a pas été essayé au-delà d'un batch de 4 sur 4 Go. Les frames font toujours 32×32 (échelle d'entraînement de la LoRA), en 3 frames de marche par direction.
+- Planche de marche : le fond magenta teinte d'orange les visages ; la vue de dos et les poses (saut, couché) sont moins fidèles au personnage que les vues de face et de profil ; la fiche de la LoRA signale aussi des cheveux ou couvre-chefs parfois coupés et une anatomie moins sûre pour les personnages non humains.
+- En mode édition sans description, le modèle garde surtout les couleurs et la silhouette générale ; une description courte du personnage améliore nettement la fidélité.
 
 - Mode niveaux de gris non pris en charge.
 - Le lancement en arrière-plan passe par `sh` et `kill` : Linux et macOS seulement.

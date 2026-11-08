@@ -28,12 +28,17 @@ from ai_inpaint_bridge.comfyui import (
     InpaintSettings,
     ModelProfile,
 )
-from ai_inpaint_bridge.klein import KLEIN_4B_BASE
+from ai_inpaint_bridge.klein import KLEIN_4B_BASE, KLEIN_4B_BASE_WALK
 from ai_inpaint_bridge.pixelize import Color
 from ai_inpaint_bridge.tasks import TASKS
 from ai_inpaint_bridge.tasks.character import generate_characters
+from ai_inpaint_bridge.tasks.walk_sheet import generate_walk_sheets
 
-BENCH_MODELS: tuple[ModelProfile, ...] = (*TASKS["inpaint"].models, KLEIN_4B_BASE)
+BENCH_MODELS: tuple[ModelProfile, ...] = (
+    *TASKS["inpaint"].models,
+    KLEIN_4B_BASE,
+    KLEIN_4B_BASE_WALK,
+)
 
 DB32_PATH = Path(
     "/usr/local/share/aseprite/data/extensions/dawnbringer-palettes/db32.gpl"
@@ -76,7 +81,8 @@ class SpriteCase:
 
     A tile is opaque and shown repeated 3x3 on the sheet to reveal its seams.
     A character case sends its prompt as the description of the character
-    task, which adds the view and framing.
+    task, which adds the view and framing; a walk case sends it to the
+    walk-sheet task, which adds the layout of the sheet.
     """
 
     name: str
@@ -85,6 +91,7 @@ class SpriteCase:
     transparent: bool = True
     tile: bool = False
     character: bool = False
+    walk: bool = False
 
 
 Case = BenchCase | SpriteCase
@@ -186,12 +193,6 @@ BENCH_CASES: tuple[BenchCase, ...] = (
 
 KNIGHT = "a knight with a blue cape"
 CAT = "an orange tabby cat"
-WALK = (
-    "A pixel art spritesheet of a knight character with a blue cape. The spritesheet "
-    "is a 4 by 4 grid of four rows of frames: the first row walks facing down, the "
-    "second row walks facing left, the third row walks facing right, the fourth row "
-    "walks facing up."
-)
 SPRITE_CASES: tuple[SpriteCase, ...] = (
     SpriteCase("knight-16", KNIGHT, (16, 16), character=True),
     SpriteCase("knight-32", KNIGHT, (32, 32), character=True),
@@ -211,7 +212,7 @@ SPRITE_CASES: tuple[SpriteCase, ...] = (
         transparent=False,
         tile=True,
     ),
-    SpriteCase("knight-walk", WALK, (128, 128)),
+    SpriteCase("knight-walk", KNIGHT, (128, 128), walk=True),
 )
 ALL_CASES: tuple[Case, ...] = (*BENCH_CASES, *SPRITE_CASES)
 
@@ -258,6 +259,10 @@ def run_case(
                 case.size, sprite_settings, generator, palette
             )
             return BenchRow(case, variants)
+        if case.walk:
+            return BenchRow(
+                case, generate_walk_sheets(sprite_settings, generator, palette)
+            )
         variants = diffusion_generate(
             case.size, sprite_settings, generator, palette, case.transparent
         )
