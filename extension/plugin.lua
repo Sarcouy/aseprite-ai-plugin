@@ -8,8 +8,13 @@ local DEFAULT_PREFERENCES = {
   use_palette = true,
   variants = 4,
   output = "New layer",
+  character_prompt = "",
+  character_size = "32",
+  character_output = "New layer",
 }
 local OUTPUTS = { "New layer", "Active layer" }
+local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
+local CHARACTER_SIZES = { "16", "24", "32", "48", "64" }
 local BACKENDS = { "comfyui", "invert" }
 -- Models of the bridge's inpaint task, the first one is its default.
 local INPAINT_MODELS = { "klein-4b", "sd15-inpaint" }
@@ -95,17 +100,65 @@ local function ask_inpaint(prefs)
   return true
 end
 
-local function run_options(prefs)
+-- Returns false when the user cancels.
+local function ask_character(prefs)
+  local dlg = Dialog("AI Character")
+  dlg:entry{ id = "prompt", label = "Description", text = prefs.character_prompt, focus = true }
+  dlg:combobox{ id = "size", label = "Size (px)", option = prefs.character_size,
+                options = CHARACTER_SIZES }
+  dlg:check{ id = "use_palette", text = "Use the sprite palette", selected = prefs.use_palette }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_VARIANTS,
+              value = prefs.variants }
+  dlg:combobox{ id = "output", label = "Output", option = prefs.character_output,
+                options = CHARACTER_OUTPUTS }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  if dlg.data.prompt:match("^%s*$") then
+    app.alert{ title = "AI", text = "Describe the character to draw." }
+    return false
+  end
+  prefs.character_prompt = dlg.data.prompt
+  prefs.character_size = dlg.data.size
+  prefs.use_palette = dlg.data.use_palette
+  prefs.variants = dlg.data.variants
+  prefs.character_output = dlg.data.output
+  return true
+end
+
+local function common_options(prefs)
   return {
     bridge_command = prefs.bridge_command,
-    margin = prefs.margin,
     backend = prefs.backend,
-    model = prefs.inpaint_model,
-    prompt = prefs.prompt,
-    denoise = prefs.denoise / 100,
     use_palette = prefs.use_palette,
     variants = prefs.backend == "comfyui" and prefs.variants or 1,
   }
+end
+
+local function inpaint_options(prefs)
+  local options = common_options(prefs)
+  options.margin = prefs.margin
+  options.model = prefs.inpaint_model
+  options.prompt = prefs.prompt
+  options.denoise = prefs.denoise / 100
+  return options
+end
+
+-- Without a sprite open the character always goes to a new sprite.
+local function character_output(prefs)
+  return app.sprite and prefs.character_output or "New sprite"
+end
+
+local function character_options(prefs)
+  local options = common_options(prefs)
+  local size = tonumber(prefs.character_size) or 32
+  options.prompt = prefs.character_prompt ~= "" and prefs.character_prompt or "a knight"
+  options.size = Size(size, size)
+  options.new_sprite = character_output(prefs) == "New sprite"
+  return options
 end
 
 local function preview_layout(job)
@@ -164,7 +217,7 @@ local function pick_variant(job)
   local function update_label()
     local text = "Variant " .. selected .. " of " .. #job.previews
     if unchanged[selected] then
-      text = text .. " (nearly unchanged)"
+      text = text .. (job.layer_name == "AI character" and " (empty)" or " (nearly unchanged)")
     end
     dlg:modify{ id = "current", text = text }
   end
@@ -229,14 +282,18 @@ local function apply_one(sprite, frame, job, index, target)
   end
 end
 
--- target is the layer to write into, or nil for a new layer.
+-- target is the layer to write into, or nil for a new layer; without a
+-- sprite the result goes to a new sprite.
 local function apply_job(sprite, frame, job, target)
-  if #job.patches == 1 then
-    apply_one(sprite, frame, job, 1, target)
-    return
+  local choice, index = "one", 1
+  if #job.patches > 1 then
+    choice, index = pick_variant(job)
   end
-  local choice, index = pick_variant(job)
-  if choice == "one" then
+  if not sprite then
+    if choice then
+      inpaint.apply_new_sprite(job, choice == "one" and index or nil)
+    end
+  elseif choice == "one" then
     apply_one(sprite, frame, job, index, target)
   elseif choice == "all" then
     inpaint.apply_all_layers(sprite, frame, job)
@@ -256,6 +313,20 @@ local function task_entries()
         return running == nil and app.sprite ~= nil and not app.sprite.selection.isEmpty
       end,
       ask = ask_inpaint,
+      options = inpaint_options,
+      output = function(prefs) return prefs.output end,
+      start = inpaint.start,
+    },
+    {
+      name = "character",
+      command_id = "AiGenerateCharacter",
+      title = "Generate Character",
+      enabled = function()
+        return running == nil
+      end,
+      ask = ask_character,
+      options = character_options,
+      output = character_output,
       start = inpaint.start,
     },
   }
@@ -263,6 +334,9 @@ end
 
 -- Returns nil when the result can still be applied, otherwise a message.
 local function apply_problem(run_state)
+  if not run_state.sprite then
+    return nil
+  end
   if inpaint.is_closed(run_state.sprite) then
     return "The sprite was closed during the generation."
   end
@@ -295,6 +369,10 @@ local function on_result(run_state, job, message)
     return
   end
   local sprite = run_state.sprite
+  if not sprite then
+    apply_job(nil, nil, job)
+    return
+  end
   app.sprite = sprite
   apply_job(sprite, sprite.frames[run_state.frame_number], job, run_state.target)
 end
@@ -370,8 +448,9 @@ local function run_task(plugin, task)
     return
   end
   local sprite, frame = app.sprite, app.frame
+  local output = task.output(prefs)
   local target
-  if prefs.output == "Active layer" then
+  if output == "Active layer" then
     local problem = inpaint.active_layer_problem(app.layer)
     if problem then
       app.alert{ title = "AI", text = problem }
@@ -379,7 +458,7 @@ local function run_task(plugin, task)
     end
     target = app.layer
   end
-  local options = run_options(prefs)
+  local options = task.options(prefs)
   options.task = task.name
   local run, message = task.start(sprite, frame, options)
   if not run then
@@ -388,8 +467,8 @@ local function run_task(plugin, task)
   end
   running = run
   wait_for(run, {
-    sprite = sprite,
-    frame_number = frame.frameNumber,
+    sprite = run.sprite,
+    frame_number = frame and frame.frameNumber or 1,
     target = target,
     label = task.title .. ": generating " .. options.variants .. " variant(s)...",
   })

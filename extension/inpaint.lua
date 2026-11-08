@@ -1,6 +1,7 @@
 local inpaint = {}
 
 local LAYER_NAME = "AI inpaint"
+local CHARACTER_LAYER_NAME = "AI character"
 local WHITE = app.pixelColor.rgba(255, 255, 255, 255)
 local pc = app.pixelColor
 
@@ -73,10 +74,12 @@ local function index_finder(sprite)
   end
 end
 
+-- sprite is nil for a result that goes to a new RGB sprite.
 local function build_patch(sprite, result, mask)
-  local patch = Image(mask.width, mask.height, sprite.colorMode)
+  local mode = sprite and sprite.colorMode or ColorMode.RGB
+  local patch = Image(mask.width, mask.height, mode)
   local to_index
-  if sprite.colorMode == ColorMode.INDEXED then
+  if mode == ColorMode.INDEXED then
     patch:clear(sprite.transparentColor)
     to_index = index_finder(sprite)
   end
@@ -90,15 +93,20 @@ local function build_patch(sprite, result, mask)
 end
 
 local function bridge_command(options, paths)
-  -- LC_NUMERIC may use a decimal comma, which argparse would reject.
-  local denoise = string.format("%.2f", options.denoise or 0.8):gsub(",", ".")
   local cmd = string.format(
-    "%s --task %s --input %s --mask %s --output %s --backend %s --prompt %s --denoise %s"
-      .. " --variants %d",
+    "%s --task %s --output %s --backend %s --prompt %s --variants %d",
     options.bridge_command, shell_quote(options.task or "inpaint"),
-    shell_quote(paths.input), shell_quote(paths.mask),
     shell_quote(paths.output), shell_quote(options.backend or "invert"),
-    shell_quote(options.prompt or ""), denoise, #paths.variants)
+    shell_quote(options.prompt or ""), #paths.variants)
+  if paths.input then
+    -- LC_NUMERIC may use a decimal comma, which argparse would reject.
+    local denoise = string.format("%.2f", options.denoise or 0.8):gsub(",", ".")
+    cmd = cmd .. " --input " .. shell_quote(paths.input) .. " --mask "
+          .. shell_quote(paths.mask) .. " --denoise " .. denoise
+  end
+  if options.size then
+    cmd = cmd .. string.format(" --size %dx%d", options.size.width, options.size.height)
+  end
   if options.model then
     cmd = cmd .. " --model " .. shell_quote(options.model)
   end
@@ -120,8 +128,9 @@ end
 
 -- The bridge writes variant i of "<run>-output.png" to "<run>-output-<i>.png".
 -- In background runs it also gets a log, its process id and a status file
--- holding its exit code, written last.
-local function temp_paths(with_palette, variants)
+-- holding its exit code, written last. Tasks drawing from the prompt alone
+-- have no input region nor mask.
+local function temp_paths(with_input, with_palette, variants)
   local dir = app.fs.joinPath(app.fs.tempPath, "aseprite-ai-inpaint")
   app.fs.makeAllDirectories(dir)
   local run_id = os.time() .. "-" .. math.random(100000, 999999)
@@ -133,8 +142,8 @@ local function temp_paths(with_palette, variants)
     outputs[i] = path("output-" .. i)
   end
   return {
-    input = path("input"),
-    mask = path("mask"),
+    input = with_input and path("input") or nil,
+    mask = with_input and path("mask") or nil,
     output = path("output"),
     palette = with_palette and path("palette") or nil,
     variants = outputs,
@@ -145,10 +154,12 @@ local function temp_paths(with_palette, variants)
 end
 
 local function remove_files(paths)
-  for _, path in ipairs({ paths.input, paths.mask, paths.palette, paths.log, paths.pid,
-                          paths.status, paths.status .. ".tmp" }) do
-    os.remove(path)
+  for _, key in ipairs({ "input", "mask", "palette", "log", "pid", "status" }) do
+    if paths[key] then
+      os.remove(paths[key])
+    end
   end
+  os.remove(paths.status .. ".tmp")
   for _, path in ipairs(paths.variants) do
     os.remove(path)
   end
@@ -169,11 +180,47 @@ local function read_variants(paths, region, output)
   return results
 end
 
+-- Rectangle of the drawn character: centered on the selection, or on the
+-- canvas without one, at the origin of a new sprite.
+local function character_region(sprite, size)
+  if not sprite then
+    return Rectangle(0, 0, size.width, size.height)
+  end
+  local area = sprite.selection.isEmpty and sprite.bounds or sprite.selection.bounds
+  return Rectangle(area.x + (area.width - size.width) // 2,
+                   area.y + (area.height - size.height) // 2, size.width, size.height)
+end
+
+-- The character task draws a whole region: its mask is fully selected and its
+-- original fully transparent, so that an empty variant shows as unchanged. A
+-- result going to a new sprite is not bound to the active sprite, which only
+-- lends its palette.
+local function prepare_character(sprite, options)
+  local placed = sprite and not options.new_sprite and sprite or nil
+  local region = character_region(placed, options.size)
+  local use_palette = sprite and (options.use_palette or sprite.colorMode == ColorMode.INDEXED)
+  local paths = temp_paths(false, use_palette, options.variants or 1)
+  local mask = Image(region.width, region.height, ColorMode.RGB)
+  mask:clear(WHITE)
+  local palette
+  if use_palette then
+    export_palette(sprite, paths.palette)
+    palette = Palette(sprite.palettes[1])
+  end
+  return { sprite = placed, region = region, mask = mask,
+           original = Image(region.width, region.height, ColorMode.RGB), paths = paths,
+           palette = palette, layer_name = CHARACTER_LAYER_NAME,
+           command = bridge_command(options, paths) }
+end
+
 -- Writes the region, its mask and the palette, and returns a run holding what
 -- the result needs, or nil and a message for the user.
 local function prepare(sprite, frame, options)
-  if sprite.colorMode == ColorMode.GRAY then
+  if sprite and sprite.colorMode == ColorMode.GRAY then
     return nil, "Grayscale sprites are not supported."
+  end
+  if options.task == "character" then
+    return prepare_character(sprite, options)
   end
   local selection = sprite.selection
   if selection.isEmpty then
@@ -185,7 +232,7 @@ local function prepare(sprite, frame, options)
   end
 
   local use_palette = options.use_palette or sprite.colorMode == ColorMode.INDEXED
-  local paths = temp_paths(use_palette, options.variants or 1)
+  local paths = temp_paths(true, use_palette, options.variants or 1)
   local mask = build_mask(selection, region)
   local original = render_region(sprite, frame, region)
   original:saveAs(paths.input)
@@ -194,13 +241,14 @@ local function prepare(sprite, frame, options)
     export_palette(sprite, paths.palette)
   end
   return { sprite = sprite, region = region, mask = mask, original = original, paths = paths,
-           command = bridge_command(options, paths) }
+           layer_name = LAYER_NAME, command = bridge_command(options, paths) }
 end
 
 -- Reads the variants and removes the run's files. Returns a job { region,
--- mask, original, previews, patches } on success, or nil and a message for the
--- user. previews are RGBA images of the whole region, patches hold only the
--- selected pixels in the sprite color mode.
+-- mask, original, previews, patches, layer_name, palette } on success, or nil
+-- and a message for the user. previews are RGBA images of the whole region,
+-- patches hold only the selected pixels in the sprite color mode (RGB without
+-- a sprite); palette is the one to give a new sprite, if any.
 local function finish(run, ok, output)
   local results, message
   if ok then
@@ -217,7 +265,7 @@ local function finish(run, ok, output)
     patches[i] = build_patch(run.sprite, result, run.mask)
   end
   return { region = run.region, mask = run.mask, original = run.original, previews = results,
-           patches = patches }
+           patches = patches, layer_name = run.layer_name, palette = run.palette }
 end
 
 -- Runs the bridge and waits for it: Aseprite is frozen meanwhile. Used by the
@@ -273,7 +321,7 @@ end
 -- message for the user. A cancelled run ends with false and no message; a run
 -- whose sprite was closed is cancelled.
 function inpaint.poll(run)
-  local closed = not run.cancelled and inpaint.is_closed(run.sprite)
+  local closed = not run.cancelled and run.sprite ~= nil and inpaint.is_closed(run.sprite)
   if closed then
     inpaint.cancel(run)
     run.closed_message = "The sprite was closed during the generation."
@@ -320,9 +368,10 @@ end
 
 -- Adds the chosen patch of a job in a new layer, as a single undo step.
 function inpaint.apply_new_layer(sprite, frame, job, index)
-  app.transaction(LAYER_NAME, function()
+  local name = job.layer_name or LAYER_NAME
+  app.transaction(name, function()
     local layer = sprite:newLayer()
-    layer.name = LAYER_NAME
+    layer.name = name
     sprite:newCel(layer, frame, job.patches[index], Point(job.region.x, job.region.y))
   end)
 end
@@ -330,9 +379,10 @@ end
 -- Adds every patch of a job in a group, one layer per variant, only the first
 -- one visible, as a single undo step.
 function inpaint.apply_all_layers(sprite, frame, job)
-  app.transaction(LAYER_NAME, function()
+  local name = job.layer_name or LAYER_NAME
+  app.transaction(name, function()
     local group = sprite:newGroup()
-    group.name = LAYER_NAME
+    group.name = name
     for i = #job.patches, 1, -1 do
       local layer = sprite:newLayer()
       layer.name = "Variant " .. i
@@ -341,6 +391,46 @@ function inpaint.apply_all_layers(sprite, frame, job)
       sprite:newCel(layer, frame, job.patches[i], Point(job.region.x, job.region.y))
     end
   end)
+end
+
+-- Palette of a sprite without source palette: transparent first, then the
+-- colors of the previews in order of appearance.
+local function previews_palette(previews)
+  local colors, seen = {}, {}
+  for _, preview in ipairs(previews) do
+    for pixel in preview:pixels() do
+      local value = pixel()
+      if pc.rgbaA(value) > 0 and not seen[value] then
+        seen[value] = true
+        colors[#colors + 1] = value
+      end
+    end
+  end
+  local palette = Palette(#colors + 1)
+  palette:setColor(0, Color{ r = 0, g = 0, b = 0, a = 0 })
+  for i, value in ipairs(colors) do
+    palette:setColor(i, Color(value))
+  end
+  return palette
+end
+
+-- Creates an RGB sprite of the job's size and puts the chosen variant in it,
+-- or every variant when index is nil. Returns the sprite.
+function inpaint.apply_new_sprite(job, index)
+  local region = job.region
+  local sprite = Sprite(region.width, region.height, ColorMode.RGB)
+  sprite:setPalette(job.palette or previews_palette(job.previews))
+  local first = sprite.layers[1]
+  local placed = { region = Rectangle(0, 0, region.width, region.height), mask = job.mask,
+                   original = job.original, previews = job.previews, patches = job.previews,
+                   layer_name = job.layer_name }
+  if index then
+    inpaint.apply_new_layer(sprite, sprite.frames[1], placed, index)
+  else
+    inpaint.apply_all_layers(sprite, sprite.frames[1], placed)
+  end
+  sprite:deleteLayer(first)
+  return sprite
 end
 
 -- Returns nil when the layer can receive a patch, otherwise a message for the user.

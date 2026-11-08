@@ -21,6 +21,7 @@ from ai_inpaint_bridge.bench import (
     tiled_preview,
 )
 from ai_inpaint_bridge.comfyui import InpaintSettings
+from ai_inpaint_bridge.tasks.character import character_prompt
 
 PALETTE = [(i * 8, 255 - i * 8, i * 4) for i in range(32)]
 DRAWN_KEYS = {
@@ -100,14 +101,21 @@ def test_sprite_case_starts_from_the_stored_sprite() -> None:
 
 
 def test_bench_runs_every_case_and_renders_one_line_each() -> None:
-    """Each case gets its prompt and the sheet grows with the cases."""
+    """Each case gets its prompt, framed for character cases, one line each."""
     generator = FlatGenerator()
     settings = replace(InpaintSettings("", 1), batch_size=2)
 
     rows = run_bench(ALL_CASES, settings, generator, PALETTE)
     sheet = render_sheet(rows, "title")
 
-    assert generator.prompts == [case.prompt for case in ALL_CASES]
+    assert generator.prompts == [
+        (
+            character_prompt(case.prompt)
+            if isinstance(case, SpriteCase) and case.character
+            else case.prompt
+        )
+        for case in ALL_CASES
+    ]
     assert all(len(row.variants) == 2 for row in rows)
     assert sheet.height > len(ALL_CASES) * CELL
 

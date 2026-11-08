@@ -167,5 +167,86 @@ assert(layer_pixel(3, 3) == background, "transparency on a background must becom
 base.isEditable = false
 assert(inpaint.active_layer_problem(base) ~= nil, "a locked layer must be refused")
 
+-- Character task: drawn from the prompt alone, centered on the canvas.
+local function palette_values(palette)
+  local values = {}
+  for i = 0, #palette - 1 do
+    local color = palette:getColor(i)
+    values[app.pixelColor.rgba(color.red, color.green, color.blue, 255)] = true
+  end
+  return values
+end
+
+local function assert_in_palette(image, palette, what)
+  local values = palette_values(palette)
+  local opaque = 0
+  for pixel in image:pixels() do
+    local value = pixel()
+    if app.pixelColor.rgbaA(value) > 0 then
+      opaque = opaque + 1
+      assert(values[value], what .. ": a color is not in the palette")
+    end
+  end
+  assert(opaque > 0, what .. ": the character is empty")
+end
+
+local character_sprite = make_sprite(mode)
+if mode ~= "indexed" then
+  -- A new RGB sprite in batch mode has a single black color, which the bridge ignores.
+  local palette = Palette(4)
+  palette:setColor(0, Color{ r = 0, g = 0, b = 0, a = 0 })
+  palette:setColor(1, Color{ r = 200, g = 10, b = 30, a = 255 })
+  palette:setColor(2, Color{ r = 230, g = 140, b = 40, a = 255 })
+  palette:setColor(3, Color{ r = 20, g = 40, b = 220, a = 255 })
+  character_sprite:setPalette(palette)
+end
+local character_options = {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "character",
+  prompt = "an orange cat",
+  size = Size(8, 8),
+  use_palette = true,
+  variants = variants,
+}
+local character_job = assert(inpaint.generate(character_sprite, character_sprite.frames[1],
+                                              character_options))
+assert(character_job.region == Rectangle(0, 0, 8, 8), "the character is not centered")
+assert(#character_job.patches == variants, "the character run returned the wrong variant count")
+for i, preview in ipairs(character_job.previews) do
+  assert_in_palette(preview, character_sprite.palettes[1], "character variant " .. i)
+end
+if backend == "invert" then
+  assert(app.pixelColor.rgbaA(character_job.previews[1]:getPixel(0, 0)) == 0,
+         "the character background is not transparent")
+  assert(inpaint.changed_fraction(character_job, 1) > 0, "a drawn character counts as empty")
+end
+inpaint.apply_new_layer(character_sprite, character_sprite.frames[1], character_job, 1)
+local character_layer = character_sprite.layers[#character_sprite.layers]
+assert(character_layer.name == "AI character", "unexpected layer: " .. character_layer.name)
+assert(character_layer:cel(1).image.colorMode == character_sprite.colorMode,
+       "character color mode differs")
+
+-- New sprite, with the palette of the active sprite or, without one, its own.
+character_options.new_sprite = true
+local lent_run = assert(inpaint.start(character_sprite, character_sprite.frames[1],
+                                      character_options))
+assert(lent_run.sprite == nil, "a new sprite run must not depend on the active sprite")
+local lent_finished, lent_job = wait_run(lent_run)
+assert(lent_finished, lent_job)
+local lent = inpaint.apply_new_sprite(lent_job, 1)
+assert(lent.width == 8 and lent.height == 8, "the new sprite has the wrong size")
+assert(#lent.palettes[1] == #character_sprite.palettes[1], "the palette was not lent")
+assert(#lent.layers == 1 and lent.layers[1].name == "AI character", "unexpected layers")
+
+local alone_run = assert(inpaint.start(nil, nil, character_options))
+local alone_finished, alone_job = wait_run(alone_run)
+assert(alone_finished, alone_job)
+assert(not app.fs.isFile(alone_run.paths.log), "the character run left its files")
+local alone = inpaint.apply_new_sprite(alone_job, nil)
+assert(#alone.layers == 1 and alone.layers[1].isGroup, "expected one group of variants")
+assert(#alone.layers[1].layers == variants, "expected one layer per variant")
+assert_in_palette(alone_job.previews[1], alone.palettes[1], "new sprite")
+
 print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. (app.params.model or "default model")
       .. ", " .. variants .. " variants)")

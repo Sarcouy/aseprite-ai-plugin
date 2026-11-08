@@ -146,3 +146,40 @@ def to_sprite_pixels(
             xy = (position % size[0], position // size[0])
             small.putpixel(xy, (*colors[label], 255))
     return small
+
+
+def foreground_box(image: Image.Image, key: Color) -> tuple[int, int, int, int] | None:
+    """Bounding box of the pixels far from the key color, None when there is none."""
+    rgb = image.convert("RGB")
+    tolerance = KEY_TOLERANCE**2
+    mask = Image.new("L", rgb.size, 0)
+    mask.putdata(
+        [
+            255 if _distance2((p[0], p[1], p[2]), key) >= tolerance else 0
+            for p in pixel_tuples(rgb)
+        ]
+    )
+    return mask.getbbox()
+
+
+def fit_to_sprite(
+    image: Image.Image,
+    size: tuple[int, int],
+    palette: Sequence[Color] | None = None,
+    margin: int = 1,
+) -> Image.Image:
+    """Reduce the subject drawn on a plain background to a sprite it fills.
+
+    The background is the border color. The crop around the subject keeps
+    margin transparent pixels on its longest side and an integer factor, so
+    that each sprite pixel is voted by a whole block.
+    """
+    rgb = image.convert("RGB")
+    key = border_color(rgb)
+    left, top, right, bottom = foreground_box(rgb, key) or (0, 0, *rgb.size)
+    inner = (max(1, size[0] - 2 * margin), max(1, size[1] - 2 * margin))
+    factor = max(1, -(-(right - left) // inner[0]), -(-(bottom - top) // inner[1]))
+    crop = (factor * size[0], factor * size[1])
+    canvas = Image.new("RGB", crop, key)
+    canvas.paste(rgb, ((crop[0] - left - right) // 2, (crop[1] - top - bottom) // 2))
+    return to_sprite_pixels(canvas, size, factor, palette, key)

@@ -31,6 +31,7 @@ from ai_inpaint_bridge.comfyui import (
 from ai_inpaint_bridge.klein import KLEIN_4B_BASE
 from ai_inpaint_bridge.pixelize import Color
 from ai_inpaint_bridge.tasks import TASKS
+from ai_inpaint_bridge.tasks.character import generate_characters
 
 BENCH_MODELS: tuple[ModelProfile, ...] = (*TASKS["inpaint"].models, KLEIN_4B_BASE)
 
@@ -74,6 +75,8 @@ class SpriteCase:
     """One sprite drawn from the prompt alone, at its final size.
 
     A tile is opaque and shown repeated 3x3 on the sheet to reveal its seams.
+    A character case sends its prompt as the description of the character
+    task, which adds the view and framing.
     """
 
     name: str
@@ -81,6 +84,7 @@ class SpriteCase:
     size: tuple[int, int]
     transparent: bool = True
     tile: bool = False
+    character: bool = False
 
 
 Case = BenchCase | SpriteCase
@@ -180,7 +184,8 @@ BENCH_CASES: tuple[BenchCase, ...] = (
     ),
 )
 
-KNIGHT = "top-down view, a knight character with a blue cape"
+KNIGHT = "a knight with a blue cape"
+CAT = "an orange tabby cat"
 WALK = (
     "A pixel art spritesheet of a knight character with a blue cape. The spritesheet "
     "is a 4 by 4 grid of four rows of frames: the first row walks facing down, the "
@@ -188,8 +193,10 @@ WALK = (
     "walks facing up."
 )
 SPRITE_CASES: tuple[SpriteCase, ...] = (
-    SpriteCase("knight-16", KNIGHT, (16, 16)),
-    SpriteCase("knight-32", KNIGHT, (32, 32)),
+    SpriteCase("knight-16", KNIGHT, (16, 16), character=True),
+    SpriteCase("knight-32", KNIGHT, (32, 32), character=True),
+    SpriteCase("cat-16", CAT, (16, 16), character=True),
+    SpriteCase("cat-32", CAT, (32, 32), character=True),
     SpriteCase(
         "grass-tile",
         "top-down view, seamless grass ground texture filling the whole image",
@@ -246,6 +253,11 @@ def run_case(
     """
     if isinstance(case, SpriteCase):
         sprite_settings = replace(settings, prompt=case.prompt)
+        if case.character:
+            variants = generate_characters(
+                case.size, sprite_settings, generator, palette
+            )
+            return BenchRow(case, variants)
         variants = diffusion_generate(
             case.size, sprite_settings, generator, palette, case.transparent
         )

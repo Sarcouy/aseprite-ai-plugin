@@ -1,10 +1,10 @@
 # aseprite-ai-inpaint
 
-Extension Aseprite qui réécrit la zone sélectionnée d'un sprite avec un modèle de diffusion local (ComfyUI).
+Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, ou dessine un personnage depuis une description, avec un modèle de diffusion local (ComfyUI).
 
 ## État
 
-Itération 6 : tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle de retouche par défaut, SD 1.5 inpainting en repli.
+Itération 7 : tâche `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) en plus de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ SD 1.5 (`--model sd15-inpaint`) reste disponible en repli : UNet de `sd-v1-5-inp
 
 ### Tâches
 
-Le pont exécute une tâche choisie avec `--task` : seule `inpaint` (la retouche, tâche par défaut) existe pour l'instant. Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut.
+Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut) ou `character` (voir [Génération de personnage](#génération-de-personnage)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
@@ -80,6 +80,27 @@ Le script crée `~/.config/aseprite/extensions/aseprite-ai-inpaint` avec un lien
 
 Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'exécuter la commande : choisir « Allow ».
 
+### Génération de personnage
+
+La tâche `character` dessine un personnage depuis une description (`--prompt`), à la taille `--size` (`N` ou `LxH`, jusqu'à 64 px), sans image d'entrée. Elle n'utilise que klein distillé.
+
+```mermaid
+flowchart LR
+    A["Description"] --> B["Prompt : grille 2×2 de sprites<br/>RPG vus de trois quarts dessus"]
+    B --> C["klein : 1 image 512×512<br/>par variante, fond couleur clé"]
+    C --> D["Case la plus grande<br/>non coupée par son bord"]
+    D --> E["Recadrage sur le personnage<br/>(facteur entier, marge 1 px)"]
+    E --> F["Palette + vote majoritaire,<br/>fond rendu transparent"]
+```
+
+1. La description est placée dans un gabarit : `a 2 by 2 grid of four separate top-down RPG overworld game sprites of <description>, three-quarter view from above, full body, small and simple, evenly spaced`, suivi de `plain <couleur clé> background`.
+2. Chaque variante est une image 512×512 générée en batch. Dessinés en petit dans une grille, les sprites sont plus simples (aplats, contour net) et gardent leur forme une fois réduits.
+3. Dans chaque image, la case retenue est celle qui contient le plus grand sprite sans toucher son bord ; si aucune ne convient (le modèle n'a pas dessiné de grille), l'image entière est utilisée. Les 4 cases d'une même image se ressemblent beaucoup : les variantes viennent d'images distinctes.
+4. Le fond est la couleur médiane du bord de la case. La case est recadrée autour du personnage, avec un facteur entier choisi pour qu'il occupe toute la hauteur ou la largeur du sprite moins 1 pixel de marge.
+5. Comme pour la retouche, le résultat est ramené à la palette, les pixels proches du fond deviennent transparents et chaque bloc est réduit par vote majoritaire.
+
+Aucune LoRA n'est utilisée, contrairement à ce que proposait l'issue : la LoRA Limbicnation n'a pas d'effet visible avec klein distillé et la LoRA svntax ne produit que des planches de marche, sur klein base (voir [Modèles récents sur 4 Go de VRAM](#modèles-récents-sur-4-go-de-vram)).
+
 ## Utilisation
 
 1. Démarrer ComfyUI (laisser le terminal ouvert) :
@@ -99,7 +120,17 @@ Redémarrer Aseprite. Au premier lancement, Aseprite demande l'autorisation d'ex
 5. Avec plusieurs variantes, une fenêtre les affiche sur la région d'origine : cliquer sur une variante puis **Apply**, ou **Keep all as layers** pour obtenir un groupe `AI inpaint` avec un calque par variante (seule la première est visible). **Cancel** n'applique rien.
 6. Seuls les pixels sélectionnés sont modifiés (ceux de la sélection au lancement), en une seule annulation.
 
-Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA.
+Pour dessiner un personnage, **Edit > AI > Generate Character** (disponible sans sprite ouvert), puis saisir :
+
+- une description en anglais, par exemple `a knight with a blue cape` ou `an orange tabby cat` ;
+- la taille : 16, 24, 32, 48 ou 64 px de côté ;
+- l'utilisation ou non de la palette du sprite actif (toujours utilisée en mode indexé) ;
+- le nombre de variantes (1 à 8 ; en 32×32 sur une RTX 3050 Ti 4 Go, environ 12 s pour 1 variante et 26 s pour 4) ;
+- la sortie : `New layer` (calque `AI character` centré sur la sélection, ou sur le canevas sans sélection) ou `New sprite` (nouveau sprite RGB à la taille du personnage, avec la palette du sprite actif ou, sans sprite, celle des couleurs du résultat). Sans sprite ouvert, la sortie est toujours `New sprite`.
+
+La fenêtre de choix est la même que pour la retouche ; une variante vide y est barrée en rouge.
+
+Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (la tâche `character` y dessine un carré de la première couleur de la palette).
 
 ## Développement
 
@@ -163,24 +194,41 @@ Retouche du chevalier à 80 %, seeds 1000 et 2000, 4 variantes :
 
 Pour ajouter un objet à côté d'un personnage, le cadrage compte : l'extension n'envoie que la sélection et une marge (8 px par défaut). Avec le chevalier entier envoyé (même seed, même force), klein n'ajoute aucune épée et recopie l'image de référence. Dans ce même essai sur le chevalier entier, la cape et les lunettes changent peu à 60 %, comme le rocher.
 
-Cas générés depuis le prompt seul, pour les futures tâches :
+Cas générés depuis le prompt seul :
 
 | Cas | Taille | Rendu sur la planche |
 |-----|--------|----------------------|
-| `knight-16`, `knight-32` | personnage vu de dessus, 16×16 et 32×32 | sur fond transparent |
+| `knight-16`, `knight-32` | chevalier à cape bleue de la tâche `character`, 16×16 et 32×32 | sur fond transparent |
+| `cat-16`, `cat-32` | chat roux de la tâche `character`, 16×16 et 32×32 | sur fond transparent |
 | `grass-tile`, `wall-tile` | tile d'herbe et de mur, 16×16 | répétée 3×3 pour voir les raccords |
 | `knight-walk` | planche de marche 128×128 : 4 directions × 4 images de 32×32, prompt rédigé comme sur la fiche de la LoRA svntax | sur fond transparent |
 
-Ces cas sont générés à 512 px puis réduits par vote majoritaire. Un sprite transparent est demandé sur une couleur clé citée dans le prompt. Le modèle ne fait que l'approcher : klein dessine « magenta » en rose plus ou moins rouge. Le fond retiré est donc la couleur médiane mesurée sur le bord de chaque image.
+Les cas de personnage passent par le même code que la tâche `character` : leur prompt est la description, placée dans son gabarit. Les autres cas sont générés à 512 px puis réduits par vote majoritaire. Un sprite transparent est demandé sur une couleur clé citée dans le prompt. Le modèle ne fait que l'approcher : klein dessine « magenta » en rose plus ou moins rouge. Le fond retiré est donc la couleur médiane mesurée sur le bord de chaque image.
 
 Résultats avec klein distillé, seed 1000, 4 variantes par cas :
 
 | Cas | Résultat |
 |-----|----------|
-| `knight-32` | chevalier à cape bleue lisible sur les 4 variantes, vu de face plutôt que de dessus |
-| `knight-16` | taches de couleur, personnage à peine reconnaissable |
+| `knight-32`, `cat-32` | voir le tableau des personnages ci-dessous |
+| `knight-16`, `cat-16` | voir le tableau des personnages ci-dessous |
 | `grass-tile` | 2 variantes texturées sans couture visible, 2 unies |
 | `wall-tile` | aucune brique : 1 variante unie, 3 en bruit gris |
+
+Personnages selon le gabarit de prompt et le traitement, klein distillé, seeds 1000 et 2000, 4 variantes par seed (8 par case du tableau) :
+
+| Gabarit, traitement | 32×32 (`knight-32`, `cat-32`) | 16×16 (`knight-16`, `cat-16`) |
+|---------------------|-------------------------------|-------------------------------|
+| initial : `top-down view, …, full body, single character, centered`, image entière | 8/8 lisibles, de face ; le chat se tient debout comme un humain | chevalier en taches de couleur ; chat réduit à un bloc orange debout |
+| RPG trois quarts dessus, image entière | 8/8 lisibles ; chat à quatre pattes | personnage petit (environ 10 px de haut) : chat reconnaissable, chevalier confus |
+| vue de dessus stricte (`seen from directly above, bird's-eye view`) | chevalier vu d'en haut (casque et cape) ; chat réduit à une tête | non mesuré |
+| RPG trois quarts dessus, recadré | 8/8 lisibles, plus grands | plus grands : chat lisible, chevalier encore confus |
+| **grille 2×2, meilleure case, recadrée (retenu)** | **8/8 lisibles**, contours nets et aplats | **chat lisible, chevalier reconnaissable** à son casque et sa cape bleue |
+
+La vue de dessus stricte n'est suivie que pour le chevalier, et des variantes du prompt (« whole body seen from above », « top-down shooter ») retombent sur une vue de face. Le gabarit retenu vise donc la vue de trois quarts dessus des RPG, la convention des jeux top-down pour les personnages. Une grille 2×2 seule (1 image, 4 cases) donne 4 fois presque le même personnage, d'où une image par variante. Générer à 256 px au lieu de 512 ne change rien de visible en 16×16 (seule taille mesurée). Ajouter `no shadow` au prompt n'enlève pas les rares pixels roses : comptés sur le rose de DB32 (215, 123, 186), au plus 4 pixels sur 4 variantes 32×32 sans l'ajout, 7 avec ; à l'œil, ce sont surtout le nez et les oreilles du chat.
+
+Une grille 4×4 (16 cases, 16×16) est bien dessinée par klein, mais pas toujours alignée sur les quarts de l'image : le découpage tombe alors entre les sprites (3 variantes vides ou en morceaux sur 16), et les cases réussies ne valent pas mieux que celles de la grille 2×2.
+
+En 64×64 (seeds 1000 et 2000), la grille 2×2 et l'image seule recadrée donnent toutes deux 8 variantes lisibles sur 8 : l'image seule est plus détaillée (pelage nuancé, reflets de l'armure), la grille donne un dessin plus simple aux contours plus nets. La grille est gardée à toutes les tailles.
 
 Planche de marche (`knight-walk`, seed 1000, 4 variantes) selon le modèle et la LoRA [svntax](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), entraînée sur klein base :
 
@@ -275,3 +323,5 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - En sortie `New layer`, le calque `AI inpaint` se superpose à l'original : un pixel rendu transparent n'efface pas ce qu'il y a dessous. Utiliser `Active layer` pour effacer.
 - Le modèle reçoit l'image aplatie de tous les calques visibles : en sortie `Active layer`, l'apparence des autres calques peut se retrouver dans le calque actif.
 - Une variante issue d'un batch ne peut pas être régénérée seule à partir de la seed.
+- Personnage : la vue est celle des RPG (trois quarts dessus, de face), pas une vue strictement de dessus ; une seule direction, pas d'animation. En 16×16, le chevalier reste approximatif (casque et cape reconnaissables, détails perdus). La taille est limitée à 64 px : chaque sprite est dessiné dans une case de 256 px de la grille, mesurée jusqu'à 64 px seulement.
+- Personnage, sortie `New sprite` sans sprite ouvert : la palette est faite des couleurs du résultat, ramené à une palette adaptative de 16 couleurs.
