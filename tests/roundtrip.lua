@@ -380,5 +380,61 @@ if backend == "invert" then
   assert(raised.bounds.y == -1, "the head did not rise above the character")
 end
 
+-- Rotations: the character of the active sprite facing down, left, right and
+-- up, in new frames tagged by direction. The left view mirrors the right one.
+local rotate_options = {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "rotate",
+  prompt = "",
+  use_palette = true,
+  variants = walk_variants,
+}
+local rotated = make_sprite(mode)
+rotated:setPalette(Palette(character_sprite.palettes[1]))
+rotated.layers[1]:cel(1).image = two_colors:clone()
+local rotated_before = #rotated.frames
+local rotate_run = assert(inpaint.start(rotated, rotated.frames[1], rotate_options))
+assert(rotate_run.command:find("--reference", 1, true), "the character to turn is not sent")
+local rotate_finished, rotate_job = wait_run(rotate_run, 900)
+assert(rotate_finished, rotate_job)
+assert(not app.fs.isFile(rotate_run.paths.reference), "the reference file was left")
+assert(rotate_job.region == Rectangle(0, 0, 4 * rotated.width, rotated.height),
+       "unexpected rotation region")
+assert(#rotate_job.previews == walk_variants, "the rotation returned the wrong variant count")
+for i, preview in ipairs(rotate_job.previews) do
+  assert_in_palette(preview, rotated.palettes[1], "rotation " .. i)
+end
+inpaint.apply_animation(rotated, rotate_job, nil)
+assert(#rotated.frames == rotated_before + 4, "expected 4 new frames")
+for i, name in ipairs({ "down", "left", "right", "up" }) do
+  local tag = rotated.tags[#rotated.tags - 4 + i]
+  assert(tag.name == name and tag.fromFrame.frameNumber == rotated_before + i
+         and tag.toFrame.frameNumber == rotated_before + i, "unexpected tag " .. tag.name)
+end
+local rotate_group = rotated.layers[#rotated.layers]
+assert(rotate_group.isGroup and rotate_group.name == "AI rotations",
+       "expected the AI rotations group")
+assert(#rotate_group.layers == walk_variants, "expected one layer per variant")
+local down_cel = rotate_group.layers[1]:cel(rotated_before + 1)
+local facing_down = Image(rotated.width, rotated.height, rotated.colorMode)
+facing_down:drawImage(down_cel.image, down_cel.position)
+assert(facing_down:isEqual(original_frame), "the down frame is not the character")
+local left_cel = rotate_group.layers[1]:cel(rotated_before + 2)
+local right_cel = rotate_group.layers[1]:cel(rotated_before + 3)
+if left_cel and right_cel then
+  local left = Image(rotated.width, rotated.height, rotated.colorMode)
+  left:drawImage(left_cel.image, left_cel.position)
+  local right = Image(rotated.width, rotated.height, rotated.colorMode)
+  right:drawImage(right_cel.image, right_cel.position)
+  right:flip(FlipType.HORIZONTAL)
+  assert(left:isEqual(right), "the left view does not mirror the right one")
+  if backend == "invert" then
+    assert(not left:isEqual(facing_down), "the placeholder left view is not mirrored")
+  end
+elseif backend == "invert" then
+  error("the placeholder side views are missing")
+end
+
 print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. (app.params.model or "default model")
       .. ", " .. variants .. " variants)")

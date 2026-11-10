@@ -18,6 +18,8 @@ local DEFAULT_PREFERENCES = {
   animation = "idle",
   animation_prompt = "",
   animation_variants = 2,
+  rotate_prompt = "",
+  rotate_variants = 2,
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
@@ -33,6 +35,8 @@ local MAX_VARIANTS = 8
 local MAX_WALK_VARIANTS = 4
 -- Each variant of an animation costs one klein redraw per pose.
 local MAX_ANIMATION_VARIANTS = 4
+-- Each variant of the rotations costs one klein drawing per view, side and back.
+local MAX_ROTATE_VARIANTS = 4
 local PREVIEW_COLUMNS = 4
 local PREVIEW_CELL = 160
 local PREVIEW_GAP = 8
@@ -195,6 +199,24 @@ local function ask_animation(prefs)
   return true
 end
 
+-- Returns false when the user cancels.
+local function ask_rotate(prefs)
+  local dlg = Dialog("AI Rotations")
+  dlg:entry{ id = "prompt", label = "Details", text = prefs.rotate_prompt, focus = true }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_ROTATE_VARIANTS,
+              value = math.min(prefs.rotate_variants, MAX_ROTATE_VARIANTS) }
+  dlg:label{ text = "Turns the active sprite (or its selection), drawn facing down." }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  prefs.rotate_prompt = dlg.data.prompt
+  prefs.rotate_variants = dlg.data.variants
+  return true
+end
+
 local function common_options(prefs)
   return {
     bridge_command = prefs.bridge_command,
@@ -253,6 +275,15 @@ local function animation_options(prefs)
   end
   options.animation = prefs.animation
   options.prompt = prefs.animation_prompt
+  return options
+end
+
+local function rotate_options(prefs)
+  local options = common_options(prefs)
+  if prefs.backend == "comfyui" then
+    options.variants = math.min(prefs.rotate_variants, MAX_ROTATE_VARIANTS)
+  end
+  options.prompt = prefs.rotate_prompt
   return options
 end
 
@@ -453,6 +484,18 @@ local function task_entries()
       end,
       ask = ask_animation,
       options = animation_options,
+      output = function() return "New frames" end,
+      start = inpaint.start,
+    },
+    {
+      name = "rotate",
+      command_id = "AiGenerateRotations",
+      title = "Generate Rotations",
+      enabled = function()
+        return running == nil and app.sprite ~= nil
+      end,
+      ask = ask_rotate,
+      options = rotate_options,
       output = function() return "New frames" end,
       start = inpaint.start,
     },

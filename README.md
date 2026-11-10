@@ -1,10 +1,10 @@
 # aseprite-ai-inpaint
 
-Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, dessine un personnage depuis une description, l'anime dans une planche de marche en 4 directions ou en idle, avec un modèle de diffusion local (ComfyUI).
+Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, dessine un personnage depuis une description, l'anime dans une planche de marche en 4 directions ou en idle, le tourne vers les 4 directions, avec un modèle de diffusion local (ComfyUI).
 
 ## État
 
-Itération 9 : tâche `animation` (idle de 4 frames d'un personnage existant, chaque pose redessinée par klein depuis un guide, **Edit > AI > Generate Animation**), en plus des tâches `walk-sheet` (planche de marche en 4 directions découpée en frames et tags Aseprite, **Edit > AI > Generate Walk Sheet**), `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) et de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
+Itération 10 : tâche `rotate` (un personnage existant tourné vers les 4 directions, vues de profil et de dos dessinées par klein, **Edit > AI > Generate Rotations**), en plus des tâches `animation` (idle de 4 frames d'un personnage existant, chaque pose redessinée par klein depuis un guide, **Edit > AI > Generate Animation**), `walk-sheet` (planche de marche en 4 directions découpée en frames et tags Aseprite, **Edit > AI > Generate Walk Sheet**), `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) et de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ SD 1.5 (`--model sd15-inpaint`) reste disponible en repli : UNet de `sd-v1-5-inp
 
 ### Tâches
 
-Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut), `character` (voir [Génération de personnage](#génération-de-personnage)), `walk-sheet` (voir [Planche de marche](#planche-de-marche)) ou `animation` (voir [Animation](#animation)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut. Sans `--comfyui-url`, le pont utilise la variable d'environnement `COMFYUI_URL`, puis `http://127.0.0.1:8188` : c'est ainsi que l'extension vise un ComfyUI sur une autre machine.
+Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut), `character` (voir [Génération de personnage](#génération-de-personnage)), `walk-sheet` (voir [Planche de marche](#planche-de-marche)), `animation` (voir [Animation](#animation)) ou `rotate` (voir [Rotations](#rotations)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut. Sans `--comfyui-url`, le pont utilise la variable d'environnement `COMFYUI_URL`, puis `http://127.0.0.1:8188` : c'est ainsi que l'extension vise un ComfyUI sur une autre machine.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
@@ -158,6 +158,36 @@ Comparaison des pistes de l'issue 13, sur le chevalier 32×32 du banc, mesurée 
 
 Le modèle vidéo a été chargé sans ComfyUI-GGUF, avec les poids officiels et `weight_dtype: fp8_e4m3fn`. Une carte plus grosse le rendrait plus rapide, pas plus animé : il traite le sprite agrandi comme une scène immobile.
 
+### Rotations
+
+La tâche `rotate` tourne un personnage existant (`--reference`, obligatoire), dessiné de face, vers les 4 directions. klein distillé dessine la vue de profil tournée vers la droite et la vue de dos, avec le sprite en référence ; la vue de gauche est le miroir de celle de droite.
+
+```mermaid
+flowchart LR
+    A["Sprite du personnage<br/>(de face)"] --> B["Référence : agrandi ×k<br/>sur la couleur clé"]
+    B --> C["klein distillé :<br/>profil droit"]
+    B --> D["klein distillé :<br/>dos"]
+    C --> E["Pieds et milieu posés<br/>sur ceux du personnage"]
+    D --> E
+    E --> F["Réduction ×k :<br/>couleurs du personnage"]
+    F --> G["Bande : face, miroir du profil,<br/>profil, dos"]
+```
+
+1. Le sprite est agrandi sans lissage du plus grand facteur entier qui tient dans 512 px et centré sur la couleur clé, comme pour l'animation. Il est donné en `ReferenceLatent` sur le prompt positif ; chaque vue part d'un latent vide.
+2. La consigne est celle du workflow de rotation de [SpriteKiln](https://github.com/brunocpf/spritekiln) : `Turn the character in the image to a <vue>. Keep exactly the same character design, outfit, colors, proportions, size and pixel art style. Full body, centered.`, suivie des détails saisis. La vue de profil est `side profile view, facing right`. Celle de dos précise ce qu'on doit voir : `back view, facing away from the viewer: the face is not visible, we see the back of the head and the back of the body, with anything worn on the back covering it`.
+3. Le fond est la couleur médiane du bord, retirée à 40 près. Le bas et le milieu de la silhouette dessinée sont posés sur les pieds et le milieu du personnage, puis l'image est réduite du même facteur, aux seules couleurs du personnage.
+4. La bande renvoyée suit l'ordre des tags de la planche de marche : bas (le sprite exact), gauche (le miroir de la vue de droite), droite, haut.
+
+Comparaison des pistes de l'issue 12, sur le chevalier 32×32 du banc, graines 1 à 4, 2 variantes chacune, sur une GTX 1660 Ti 6 Go :
+
+| Piste | Temps | Vue de dos réussie |
+|-------|-------|--------------------|
+| Consigne de dos explicite (retenue) | 91 s pour 2 variantes | 6 variantes sur 8 ; la graine 3 garde la face sur ses 2 variantes |
+| Consigne de dos de SpriteKiln (`back view, facing away from the viewer`) | 98 s pour 2 variantes | 4 sur 8 : vue de face recopiée ou visière visible, une variante aux couleurs brunies |
+| Vue de profil déjà dessinée en seconde référence | 130 s pour 2 variantes (une génération par variante) | Environ 5 sur 8 : cape plus proche du profil, mais une couleur inventée et une vue ambiguë |
+
+La vue de profil est reconnaissable sur les 8 variantes, en 98 s pour 2. Dessinée par klein, la vue de gauche ne ressemblait pas toujours à celle de droite (longueur de la cape) : le miroir garantit leur cohérence et économise une génération. Une rotation complète prend donc environ 200 s pour 2 variantes.
+
 ## Utilisation
 
 1. Démarrer ComfyUI (laisser le terminal ouvert) :
@@ -205,9 +235,16 @@ Pour animer un personnage existant, ouvrir son sprite, sélectionner le personna
 
 Les 4 frames sont ajoutées après les dernières du sprite, dans un calque `AI idle` placé à l'endroit du personnage (une ligne au-dessus de la sélection, pour la tête à l'inspiration), avec le tag `idle`, à 250 ms par frame. **Keep all as layers** met chaque variante dans un calque du groupe `AI idle`, seule la première visible. Le personnage animé est l'image aplatie des calques visibles de la frame courante.
 
+Pour tourner un personnage existant, dessiné de face, ouvrir son sprite, sélectionner le personnage si le canevas en contient plusieurs, puis **Edit > AI > Generate Rotations** et saisir :
+
+- des détails facultatifs, ajoutés à la consigne de chaque vue (par exemple `a sword in the right hand`) ;
+- le nombre de variantes, de 1 à 4, 2 par défaut (environ 200 s pour 2 variantes sur une GTX 1660 Ti 6 Go).
+
+Les 4 frames sont ajoutées après les dernières du sprite, dans un calque `AI rotations` placé à l'endroit du personnage, chacune avec son tag : `down`, `left`, `right`, `up`. **Keep all as layers** met chaque variante dans un calque du groupe `AI rotations`, seule la première visible.
+
 Pour utiliser un ComfyUI sur une autre machine, lancer Aseprite avec `COMFYUI_URL=http://<machine>:8188` dans l'environnement.
 
-Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (les tâches `character` et `walk-sheet` y dessinent des carrés de la première couleur de la palette, la tâche `animation` renvoie les guides des poses, sans les redessiner).
+Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (les tâches `character` et `walk-sheet` y dessinent des carrés de la première couleur de la palette, la tâche `animation` renvoie les guides des poses, sans les redessiner, et la tâche `rotate` le personnage tel quel dans les 4 directions, retourné pour la gauche).
 
 ## Développement
 
@@ -227,7 +264,7 @@ poetry run black --check .
 poetry run mypy src tests
 ```
 
-Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif, personnage et planche de marche dans le sprite actif ou dans un nouveau sprite, mode édition, idle dans le sprite actif). Avec `backend=comfyui`, la planche de marche est générée avec une seule variante : le test dure plusieurs minutes. En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
+Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif, personnage et planche de marche dans le sprite actif ou dans un nouveau sprite, mode édition, idle et rotations dans le sprite actif). Avec `backend=comfyui`, la planche de marche est générée avec une seule variante : le test dure plusieurs minutes. En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
 
 ```bash
 aseprite -b --script-param bridge="$(poetry env info -p)/bin/ai-inpaint-bridge" --script-param backend=invert --script-param mode=rgb --script-param variants=3 --script tests/roundtrip.lua
@@ -414,6 +451,8 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - `loras/klein4b-base-pixel-4walk-svntax.safetensors` (`pixel_4walk_small_flux2_klein_base_4b_v1.safetensors` de [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), version à 3000 étapes que la fiche conseille pour les personnages humanoïdes, renommée)
 
 ## Limites connues
+
+- Rotations : 4 directions seulement, pas de diagonales. Le personnage doit être dessiné de face. La vue de dos reste de face sur environ 1 variante sur 4 et la cape change de longueur entre le profil et le dos. Le miroir change de main un objet tenu d'un seul côté. Chaque vue est réduite au cadre du personnage de face : une partie qui dépasse ce cadre (cape étalée de profil) est coupée.
 
 - Idle : le mouvement est d'un pixel, la respiration d'un personnage debout ; la taille est placée à 65 % de sa hauteur, ce qui convient à un personnage debout vu de face, moins à un personnage accroupi ou vu de profil. L'extension ajoute une ligne transparente au-dessus de la sélection, où monte la tête à l'inspiration ; un personnage qui touche le bord haut du canevas y monte quand même, mais hors du canevas : sa ligne du haut ne se voit plus. Pas encore d'attaque ni de saut : il leur faudrait chacun un guide, que le simple décalage d'une bande de lignes ne donne pas.
 

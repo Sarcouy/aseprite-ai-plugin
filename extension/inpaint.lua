@@ -16,6 +16,9 @@ local ANIMATION_FRAMES = { idle = 4 }
 local ANIMATION_DURATION = 0.25
 -- Transparent rows above the character, where its head rises when it breathes in.
 local ANIMATION_HEADROOM = 1
+-- The rotations come back facing down, left, right and up, one tag per frame.
+local ROTATE_TAGS = WALK_TAGS
+local ROTATE_LAYER_NAME = "AI rotations"
 local WHITE = app.pixelColor.rgba(255, 255, 255, 255)
 local pc = app.pixelColor
 
@@ -265,16 +268,14 @@ local function prepare_walk(sprite, frame, options)
   return run
 end
 
--- The character to animate is the frame of the active sprite, cut to the
--- selection if any. The bridge returns the frames side by side, they are put
--- back in new frames at the place of the character.
-local function prepare_animation(sprite, frame, options)
+-- The character is the frame of the active sprite, cut to the selection if
+-- any. The bridge returns the frames side by side, they are put back in new
+-- frames at the place of the character, headroom rows higher. strip names
+-- the frames: { name, count, headroom, layer_name, tags }, tags naming each
+-- frame, or the whole strip being tagged with name when there are none.
+local function prepare_strip(sprite, frame, options, strip)
   if not sprite then
-    return nil, "Open the sprite of the character to animate first."
-  end
-  local count = ANIMATION_FRAMES[options.animation]
-  if not count then
-    return nil, "Unknown animation: " .. tostring(options.animation)
+    return nil, "Open the sprite of the character first."
   end
   local area = sprite.selection.isEmpty and sprite.bounds
                or sprite.selection.bounds:intersect(sprite.bounds)
@@ -283,18 +284,34 @@ local function prepare_animation(sprite, frame, options)
   end
   local character = render_region(sprite, frame, area)
   if character:isEmpty() then
-    return nil, "The character to animate is empty."
+    return nil, "The character is empty."
   end
-  local height = area.height + ANIMATION_HEADROOM
+  local height = area.height + strip.headroom
   local reference = Image(area.width, height, ColorMode.RGB)
-  reference:drawImage(character, Point(0, ANIMATION_HEADROOM))
-  local layer_name = "AI " .. options.animation
-  local run = prepare_drawing(sprite, options, Size(area.width * count, height),
-                              layer_name, reference)
-  run.region = Rectangle(0, 0, area.width * count, height)
-  run.origin = Point(area.x, area.y - ANIMATION_HEADROOM)
-  run.animation = { name = options.animation, count = count, width = area.width }
+  reference:drawImage(character, Point(0, strip.headroom))
+  local run = prepare_drawing(sprite, options, Size(area.width * strip.count, height),
+                              strip.layer_name, reference)
+  run.region = Rectangle(0, 0, area.width * strip.count, height)
+  run.origin = Point(area.x, area.y - strip.headroom)
+  run.animation = { name = strip.name, count = strip.count, width = area.width,
+                    tags = strip.tags }
   return run
+end
+
+local function prepare_animation(sprite, frame, options)
+  local count = ANIMATION_FRAMES[options.animation]
+  if not count then
+    return nil, "Unknown animation: " .. tostring(options.animation)
+  end
+  return prepare_strip(sprite, frame, options, {
+    name = options.animation, count = count, headroom = ANIMATION_HEADROOM,
+    layer_name = "AI " .. options.animation })
+end
+
+local function prepare_rotate(sprite, frame, options)
+  return prepare_strip(sprite, frame, options, {
+    name = "rotate", count = #ROTATE_TAGS, headroom = 0, layer_name = ROTATE_LAYER_NAME,
+    tags = ROTATE_TAGS })
 end
 
 -- Writes the region, its mask and the palette, and returns a run holding what
@@ -311,6 +328,9 @@ local function prepare(sprite, frame, options)
   end
   if options.task == "animation" then
     return prepare_animation(sprite, frame, options)
+  end
+  if options.task == "rotate" then
+    return prepare_rotate(sprite, frame, options)
   end
   local selection = sprite.selection
   if selection.isEmpty then
@@ -616,8 +636,9 @@ local function add_animation_layer(sprite, first, strip, job, name, parent)
 end
 
 -- Puts the frames of the chosen strip, or of every strip when index is nil,
--- in new frames after the last one, tagged with the animation name, as a
--- single undo step.
+-- in new frames after the last one, as a single undo step. Each frame gets
+-- its own tag when the strip names them, else the frames are tagged with the
+-- animation name.
 function inpaint.apply_animation(sprite, job, index)
   local count = job.animation.count
   local name = job.layer_name
@@ -638,7 +659,14 @@ function inpaint.apply_animation(sprite, job, index)
         layer.isVisible = i == 1
       end
     end
-    sprite:newTag(first, first + count - 1).name = job.animation.name
+    local tags = job.animation.tags
+    if tags then
+      for i, tag in ipairs(tags) do
+        sprite:newTag(first + i - 1, first + i - 1).name = tag
+      end
+    else
+      sprite:newTag(first, first + count - 1).name = job.animation.name
+    end
   end)
 end
 
