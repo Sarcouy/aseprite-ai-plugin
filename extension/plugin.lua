@@ -20,10 +20,14 @@ local DEFAULT_PREFERENCES = {
   animation_variants = 2,
   rotate_prompt = "",
   rotate_variants = 2,
+  tile_prompt = "",
+  tile_size = "32",
+  tile_output = "New layer",
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
 local CHARACTER_SIZES = { "16", "24", "32", "48", "64" }
+local TILE_SIZES = { "16", "32" }
 local WALK_OUTPUTS = { "New sprite", "New frames" }
 local BACKENDS = { "comfyui", "invert" }
 local ANIMATIONS = { "idle" }
@@ -147,6 +151,34 @@ local function ask_character(prefs)
 end
 
 -- Returns false when the user cancels.
+local function ask_tile(prefs)
+  local dlg = Dialog("AI Tile")
+  dlg:entry{ id = "prompt", label = "Material", text = prefs.tile_prompt, focus = true }
+  dlg:combobox{ id = "size", label = "Size (px)", option = prefs.tile_size, options = TILE_SIZES }
+  dlg:check{ id = "use_palette", text = "Use the sprite palette", selected = prefs.use_palette }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_VARIANTS,
+              value = prefs.variants }
+  dlg:combobox{ id = "output", label = "Output", option = prefs.tile_output,
+                options = CHARACTER_OUTPUTS }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  if dlg.data.prompt:match("^%s*$") then
+    app.alert{ title = "AI", text = "Describe the material of the tile." }
+    return false
+  end
+  prefs.tile_prompt = dlg.data.prompt
+  prefs.tile_size = dlg.data.size
+  prefs.use_palette = dlg.data.use_palette
+  prefs.variants = dlg.data.variants
+  prefs.tile_output = dlg.data.output
+  return true
+end
+
+-- Returns false when the user cancels.
 local function ask_walk(prefs)
   local dlg = Dialog("AI Walk Sheet")
   dlg:check{ id = "from_sprite", text = "Animate the active sprite (or its selection)",
@@ -249,6 +281,20 @@ local function character_options(prefs)
   return options
 end
 
+-- Without a sprite open the tile always goes to a new sprite.
+local function tile_output(prefs)
+  return app.sprite and prefs.tile_output or "New sprite"
+end
+
+local function tile_options(prefs)
+  local options = common_options(prefs)
+  local size = tonumber(prefs.tile_size) or 32
+  options.prompt = prefs.tile_prompt ~= "" and prefs.tile_prompt or "grass"
+  options.size = Size(size, size)
+  options.new_sprite = tile_output(prefs) == "New sprite"
+  return options
+end
+
 -- Without a sprite open the walk sheet always goes to a new sprite.
 local function walk_output(prefs)
   return app.sprite and prefs.walk_output or "New sprite"
@@ -287,20 +333,28 @@ local function rotate_options(prefs)
   return options
 end
 
+-- A tile is drawn repeated job.preview_repeat times in both directions, to
+-- show its seams.
 local function preview_layout(job)
   local region = job.region
+  local repeats = job.preview_repeat or 1
   -- Integer zoom keeps pixels square; regions larger than a cell are shrunk.
-  local scale = PREVIEW_CELL / math.max(region.width, region.height)
+  local scale = PREVIEW_CELL / (repeats * math.max(region.width, region.height))
   if scale >= 1 then
     scale = math.floor(scale)
   end
   local count = #job.previews
   local columns = math.min(count, PREVIEW_COLUMNS)
   local rows = math.ceil(count / columns)
-  local cell_w = math.max(1, math.floor(region.width * scale))
-  local cell_h = math.max(1, math.floor(region.height * scale))
+  local copy_w = math.max(1, math.floor(region.width * scale))
+  local copy_h = math.max(1, math.floor(region.height * scale))
+  local cell_w = copy_w * repeats
+  local cell_h = copy_h * repeats
   return {
     columns = columns,
+    repeats = repeats,
+    copy_w = copy_w,
+    copy_h = copy_h,
     cell_w = cell_w,
     cell_h = cell_h,
     width = columns * cell_w + (columns + 1) * PREVIEW_GAP,
@@ -357,7 +411,14 @@ local function pick_variant(job)
       for i, preview in ipairs(job.previews) do
         local rect = cell_rect(layout, i)
         paint_checker(ctx, rect)
-        ctx:drawImage(preview, Rectangle(0, 0, preview.width, preview.height), rect)
+        local source = Rectangle(0, 0, preview.width, preview.height)
+        for row = 0, layout.repeats - 1 do
+          for column = 0, layout.repeats - 1 do
+            ctx:drawImage(preview, source,
+                          Rectangle(rect.x + column * layout.copy_w, rect.y + row * layout.copy_h,
+                                    layout.copy_w, layout.copy_h))
+          end
+        end
         if unchanged[i] then
           ctx.color = UNCHANGED_COLOR
           ctx.strokeWidth = 2
@@ -461,6 +522,18 @@ local function task_entries()
       ask = ask_character,
       options = character_options,
       output = character_output,
+      start = inpaint.start,
+    },
+    {
+      name = "tile",
+      command_id = "AiGenerateTile",
+      title = "Generate Tile",
+      enabled = function()
+        return running == nil
+      end,
+      ask = ask_tile,
+      options = tile_options,
+      output = tile_output,
       start = inpaint.start,
     },
     {

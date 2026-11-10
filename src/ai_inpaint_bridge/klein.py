@@ -296,6 +296,155 @@ def build_klein_guided_workflow(
     }
 
 
+LATENT_SCALE = 16
+LATENT_UNIT = 8
+WRAP_CELLS = 8
+
+
+def _latent_crop(
+    workflow: Workflow, node: str, samples: Link, box: tuple[int, int, int, int]
+) -> Link:
+    """Crop box (x, y, width, height) of a latent, in latent cells."""
+    x, y, width, height = box
+    workflow[node] = {
+        "class_type": "LatentCrop",
+        "inputs": {
+            "samples": samples,
+            "x": x * LATENT_UNIT,
+            "y": y * LATENT_UNIT,
+            "width": width * LATENT_UNIT,
+            "height": height * LATENT_UNIT,
+        },
+    }
+    return [node, 0]
+
+
+def _latent_paste(
+    workflow: Workflow, node: str, target: Link, samples: Link, at: tuple[int, int]
+) -> Link:
+    """samples pasted on target at (x, y), in latent cells."""
+    workflow[node] = {
+        "class_type": "LatentComposite",
+        "inputs": {
+            "samples_to": target,
+            "samples_from": samples,
+            "x": at[0] * LATENT_UNIT,
+            "y": at[1] * LATENT_UNIT,
+            "feather": 0,
+        },
+    }
+    return [node, 0]
+
+
+def _half_roll(workflow: Workflow, prefix: str, samples: Link, cells: int) -> Link:
+    """The latent rolled by half its size on both axes, its corners swapped."""
+    half = cells // 2
+    rolled = samples
+    for index, (x, y) in enumerate(((0, 0), (half, 0), (0, half), (half, half))):
+        piece = _latent_crop(workflow, f"{prefix}c{index}", samples, (x, y, half, half))
+        rolled = _latent_paste(
+            workflow,
+            f"{prefix}p{index}",
+            rolled,
+            piece,
+            ((x + half) % cells, (y + half) % cells),
+        )
+    return rolled
+
+
+def _empty_square(cells: int, batch_size: int) -> dict[str, Any]:
+    side = cells * LATENT_SCALE
+    return {
+        "class_type": "EmptyFlux2LatentImage",
+        "inputs": {"width": side, "height": side, "batch_size": batch_size},
+    }
+
+
+def _wrapped(workflow: Workflow, samples: Link, cells: int, batch_size: int) -> Link:
+    """The latent surrounded by WRAP_CELLS of its opposite edges, as if repeated.
+
+    The latent is pasted at the 4 corners of the inner square, so that its
+    first rows and columns fill the right and bottom margins; its last ones,
+    cropped, fill the left and top margins.
+    """
+    workflow["50"] = _empty_square(cells + 2 * WRAP_CELLS, batch_size)
+    edge = cells - WRAP_CELLS
+    near, far = WRAP_CELLS, WRAP_CELLS + cells
+    crops = {
+        "right": ((edge, 0, WRAP_CELLS, cells), ((0, near), (0, far))),
+        "bottom": ((0, edge, cells, WRAP_CELLS), ((near, 0), (far, 0))),
+        "corner": ((edge, edge, WRAP_CELLS, WRAP_CELLS), ((0, 0),)),
+    }
+    pieces = [
+        (samples, at) for at in ((near, near), (far, near), (near, far), (far, far))
+    ]
+    for index, (box, places) in enumerate(crops.values()):
+        piece = _latent_crop(workflow, f"5{index + 1}", samples, box)
+        pieces.extend((piece, at) for at in places)
+    wrapped: Link = ["50", 0]
+    for index, (piece, at) in enumerate(pieces):
+        wrapped = _latent_paste(workflow, f"6{index}", wrapped, piece, at)
+    return wrapped
+
+
+def build_klein_tile_workflow(
+    settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: text to an image that repeats without seams.
+
+    Each step is sampled alone; between two steps the latent is rolled by half
+    its size, so that its edges meet in the middle, where the model paints
+    across them. The latent is decoded surrounded by its opposite edges, and
+    cropped back, so that the decoder sees no edge either. The square side
+    must be a multiple of 256 pixels: the rolled halves are at least
+    WRAP_CELLS latent cells wide.
+    """
+    cells = width // LATENT_SCALE
+    if width != height or cells % (2 * WRAP_CELLS):
+        raise ValueError(
+            f"a tile is drawn on a square of 256 x n pixels, not {width}x{height}"
+        )
+    sigmas = klein_sigmas(replace(settings, denoise=1.0), width, height)
+    workflow = build_klein_text_workflow(settings, width, height)
+    del workflow["15"], workflow["19"]
+    workflow["40"] = {"class_type": "DisableNoise", "inputs": {}}
+    latent: Link = ["7", 0]
+    for step in range(settings.steps):
+        if step:
+            latent = _half_roll(workflow, f"r{step}", latent, cells)
+        workflow[f"s{step}"] = {
+            "class_type": "ManualSigmas",
+            "inputs": {"sigmas": f"{sigmas[step]:.10f}, {sigmas[step + 1]:.10f}"},
+        }
+        workflow[f"k{step}"] = {
+            "class_type": "SamplerCustomAdvanced",
+            "inputs": {
+                "noise": ["17", 0] if step == 0 else ["40", 0],
+                "guider": ["18", 0],
+                "sampler": ["14", 0],
+                "sigmas": [f"s{step}", 0],
+                "latent_image": latent,
+            },
+        }
+        latent = [f"k{step}", 0]
+    workflow["10"]["inputs"]["samples"] = _wrapped(
+        workflow, latent, cells, settings.batch_size
+    )
+    margin = WRAP_CELLS * LATENT_SCALE
+    workflow["54"] = {
+        "class_type": "ImageCrop",
+        "inputs": {
+            "image": ["10", 0],
+            "width": width,
+            "height": height,
+            "x": margin,
+            "y": margin,
+        },
+    }
+    workflow[OUTPUT_NODE]["inputs"]["images"] = ["54", 0]
+    return workflow
+
+
 KLEIN_4B = ModelProfile(
     name="klein-4b",
     settings=KLEIN_SETTINGS,
@@ -318,4 +467,8 @@ KLEIN_4B_BASE_WALK = replace(
     KLEIN_4B_BASE,
     name="klein-4b-base-svntax",
     settings=replace(KLEIN_4B_BASE.settings, lora=SVNTAX_LORA),
+)
+
+KLEIN_4B_TILE = replace(
+    KLEIN_4B, name="klein-4b-tile", build_text=build_klein_tile_workflow
 )

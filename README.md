@@ -1,10 +1,10 @@
 # aseprite-ai-inpaint
 
-Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, dessine un personnage depuis une description, l'anime dans une planche de marche en 4 directions ou en idle, le tourne vers les 4 directions, avec un modèle de diffusion local (ComfyUI).
+Extension Aseprite qui réécrit la zone sélectionnée d'un sprite, dessine un personnage depuis une description, l'anime dans une planche de marche en 4 directions ou en idle, le tourne vers les 4 directions, dessine des tiles sans couture, avec un modèle de diffusion local (ComfyUI).
 
 ## État
 
-Itération 10 : tâche `rotate` (un personnage existant tourné vers les 4 directions, vues de profil et de dos dessinées par klein, **Edit > AI > Generate Rotations**), en plus des tâches `animation` (idle de 4 frames d'un personnage existant, chaque pose redessinée par klein depuis un guide, **Edit > AI > Generate Animation**), `walk-sheet` (planche de marche en 4 directions découpée en frames et tags Aseprite, **Edit > AI > Generate Walk Sheet**), `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) et de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
+Itération 11 : tâche `tile` (tile de 16 ou 32 px qui se répète sans couture, **Edit > AI > Generate Tile**), en plus des tâches `rotate` (un personnage existant tourné vers les 4 directions, vues de profil et de dos dessinées par klein, **Edit > AI > Generate Rotations**), `animation` (idle de 4 frames d'un personnage existant, chaque pose redessinée par klein depuis un guide, **Edit > AI > Generate Animation**), `walk-sheet` (planche de marche en 4 directions découpée en frames et tags Aseprite, **Edit > AI > Generate Walk Sheet**), `character` (personnage vu de dessus sur fond transparent, **Edit > AI > Generate Character**) et de la retouche. Tâches choisies avec `--task`, sous-menu **Edit > AI**, FLUX.2 klein 4B distillé comme modèle par défaut, SD 1.5 inpainting en repli pour la retouche.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ SD 1.5 (`--model sd15-inpaint`) reste disponible en repli : UNet de `sd-v1-5-inp
 
 ### Tâches
 
-Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut), `character` (voir [Génération de personnage](#génération-de-personnage)), `walk-sheet` (voir [Planche de marche](#planche-de-marche)), `animation` (voir [Animation](#animation)) ou `rotate` (voir [Rotations](#rotations)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut. Sans `--comfyui-url`, le pont utilise la variable d'environnement `COMFYUI_URL`, puis `http://127.0.0.1:8188` : c'est ainsi que l'extension vise un ComfyUI sur une autre machine.
+Le pont exécute une tâche choisie avec `--task` : `inpaint` (la retouche, tâche par défaut), `character` (voir [Génération de personnage](#génération-de-personnage)), `walk-sheet` (voir [Planche de marche](#planche-de-marche)), `animation` (voir [Animation](#animation)), `rotate` (voir [Rotations](#rotations)) ou `tile` (voir [Tile sans couture](#tile-sans-couture)). Chaque tâche est un module de `src/ai_inpaint_bridge/tasks/` qui déclare ses options, son modèle de base (graphe ComfyUI et réglages par défaut) et son traitement. Une nouvelle tâche s'ajoute au registre `TASKS` de `tasks/__init__.py` et à la table `task_entries` de `extension/plugin.lua`, qui crée sa commande dans le sous-menu **Edit > AI**. Les options `--output`, `--backend`, `--model`, `--prompt`, `--seed`, `--variants`, `--palette` et `--comfyui-url` sont communes à toutes les tâches ; `--model` prend le premier modèle de la tâche par défaut. Sans `--comfyui-url`, le pont utilise la variable d'environnement `COMFYUI_URL`, puis `http://127.0.0.1:8188` : c'est ainsi que l'extension vise un ComfyUI sur une autre machine.
 
 Avec `--variants N` (1 à 8), le latent encodé est répété N fois (nœud `RepeatLatentBatch`) et échantillonné en un seul passage : chaque élément du batch reçoit un bruit différent. Le pont écrit `<sortie>-1.png` à `<sortie>-N.png`.
 
@@ -188,6 +188,41 @@ Comparaison des pistes de l'issue 12, sur le chevalier 32×32 du banc, graines 1
 
 La vue de profil est reconnaissable sur les 8 variantes, en 98 s pour 2. Dessinée par klein, la vue de gauche ne ressemblait pas toujours à celle de droite (longueur de la cape) : le miroir garantit leur cohérence et économise une génération. Une rotation complète prend donc environ 200 s pour 2 variantes.
 
+### Tile sans couture
+
+La tâche `tile` dessine une tile carrée de 16 ou 32 px (`--size`) d'une matière décrite par `--prompt`, qui se répète sans couture visible. Elle utilise klein distillé, avec un graphe propre (modèle `klein-4b-tile`), fait des seuls nœuds de base de ComfyUI.
+
+```mermaid
+flowchart LR
+    A["Matière"] --> B["Gabarit de texture<br/>à gros éléments"]
+    B --> C["Étape 1 de klein<br/>256×256"]
+    C --> D["Latent décalé<br/>d'une demi-tile"]
+    D --> E["Étape suivante"]
+    E -->|"4 étapes"| D
+    E --> F["Décodage entouré<br/>des bords opposés"]
+    F --> G["Moyenne par bloc,<br/>puis palette"]
+```
+
+1. La matière est placée dans un gabarit : `seamless tileable pixel art texture of <matière>, top-down, flat even lighting, repeating pattern, no objects, large chunky pixels, simple 16-bit RPG game tile, a few big shapes`. La fin du gabarit demande de gros éléments : sans elle, klein dessine une soixantaine de dalles par image, trop petites pour une tile de 32 px.
+2. L'image fait 256×256 : klein y dessine 4 à 6 dalles, contre une soixantaine en 512×512.
+3. Les 4 étapes de klein sont échantillonnées une à une (`SamplerCustomAdvanced`, `ManualSigmas`, `DisableNoise` après la première). Entre deux étapes, le latent est décalé en boucle d'une demi-tile (`LatentCrop` et `LatentComposite`) : ses bords se retrouvent au milieu de l'image, où le modèle les redessine d'un seul tenant. C'est l'idée du nœud `SK_SeamlessTiling` de [SpriteKiln](https://github.com/brunocpf/spritekiln), sans nœud à installer. Le découpage en étapes ne change pas l'image : échantillonnées une à une ou d'un bloc, les 4 étapes donnent la même image.
+4. Le latent est décodé entouré de 8 cellules de ses bords opposés, puis l'image est recadrée : le décodeur ne voit pas de bord non plus.
+5. L'image est réduite par moyenne de chaque bloc (8×8 px pour une tile de 32 px, 16×16 px pour une tile de 16 px), puis ramenée à la palette, ou à une palette adaptative de 16 couleurs. Le vote par bloc des autres tâches efface les joints, plus fins qu'un bloc ; la moyenne les garde en pixels plus foncés.
+
+Comparaison des pistes de l'issue 10, herbe et dalles de donjon, graines 1 et 2, 2 variantes chacune, sur une GTX 1660 Ti 6 Go :
+
+| Piste | Temps pour 2 variantes | Résultat |
+|-------|------------------------|----------|
+| Latent décalé entre les étapes (retenue) | environ 20 s | Aucune couture visible sur les aperçus 3×3 |
+| Dessin seul, gabarit « seamless tileable » | environ 20 s | Coutures visibles : joints doublés sur les dalles, ligne claire sur l'herbe |
+| Dessin, décalage d'une demi-tile, puis retouche de la croix centrale par klein | environ 20 s | La croix retouchée laisse parfois une ligne pâle, les joints changent de rythme au raccord |
+| Dessin en 512×512 | environ 45 s | Éléments trop petits : réduite à 32 px, la texture n'est plus qu'un semis de points |
+| Réduction par vote (comme les autres tâches) | — | Joints effacés, dalles illisibles |
+
+Sur 4 matières (herbe à fleurs, dalles de donjon, sable, eau), graines 1 et 2, 2 variantes chacune, tile de 32 px ramenée à la palette DB32 : 20 à 26 s pour 2 variantes (44 s au premier appel, le temps de charger le modèle), toutes les couleurs dans la palette, aucune couture nette sur les aperçus 3×3. Une variante de sable sort presque unie ; une variante d'eau, presque unie elle aussi, montre des pointillés réguliers qui soulignent la grille de répétition. Les dalles restent la matière la moins nette : sur une variante, les joints se brouillent.
+
+Une comparaison automatique des bords opposés (écart entre la dernière et la première ligne, rapporté aux écarts entre lignes voisines) a été essayée pour classer les variantes. Elle ne voit pas les coutures des dalles : un joint doublé au raccord ressemble à deux joints ordinaires. Elle n'a pas été gardée ; c'est l'aperçu 3×3 qui montre les coutures.
+
 ## Utilisation
 
 1. Démarrer ComfyUI (laisser le terminal ouvert) :
@@ -242,9 +277,19 @@ Pour tourner un personnage existant, dessiné de face, ouvrir son sprite, sélec
 
 Les 4 frames sont ajoutées après les dernières du sprite, dans un calque `AI rotations` placé à l'endroit du personnage, chacune avec son tag : `down`, `left`, `right`, `up`. **Keep all as layers** met chaque variante dans un calque du groupe `AI rotations`, seule la première visible.
 
+Pour dessiner une tile, **Edit > AI > Generate Tile** et saisir :
+
+- la matière, en anglais (par exemple `sand`, `grey stone dungeon floor tiles`) ;
+- la taille, 16 ou 32 px ;
+- l'utilisation ou non de la palette du sprite ;
+- le nombre de variantes ;
+- la sortie : `New layer` (calque `AI tile`, centré sur la sélection ou sur le canevas) ou `New sprite`. Sans sprite ouvert, la sortie est toujours `New sprite`.
+
+La fenêtre de choix montre chaque variante répétée 3×3, pour juger les raccords.
+
 Pour utiliser un ComfyUI sur une autre machine, lancer Aseprite avec `COMFYUI_URL=http://<machine>:8188` dans l'environnement.
 
-Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (les tâches `character` et `walk-sheet` y dessinent des carrés de la première couleur de la palette, la tâche `animation` renvoie les guides des poses, sans les redessiner, et la tâche `rotate` le personnage tel quel dans les 4 directions, retourné pour la gauche).
+Le backend se choisit dans **Edit > AI > Settings...** : `comfyui` pour la génération, `invert` pour tester la plomberie sans IA (les tâches `character` et `walk-sheet` y dessinent des carrés de la première couleur de la palette, la tâche `animation` renvoie les guides des poses, sans les redessiner, la tâche `rotate` le personnage tel quel dans les 4 directions, retourné pour la gauche, et la tâche `tile` un damier des deux premières couleurs de la palette).
 
 ## Développement
 
@@ -264,7 +309,7 @@ poetry run black --check .
 poetry run mypy src tests
 ```
 
-Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif, personnage et planche de marche dans le sprite actif ou dans un nouveau sprite, mode édition, idle et rotations dans le sprite actif). Avec `backend=comfyui`, la planche de marche est générée avec une seule variante : le test dure plusieurs minutes. En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
+Test d'aller-retour de l'extension, sans interface (génération de plusieurs variantes, en mode bloquant puis en arrière-plan, annulation d'un pont lent, nouveau calque, groupe de variantes, calque actif, personnage et planche de marche dans le sprite actif ou dans un nouveau sprite, mode édition, idle et rotations dans le sprite actif, tile répétée en aperçu). Avec `backend=comfyui`, la planche de marche est générée avec une seule variante : le test dure plusieurs minutes. En mode batch aucun `Timer` ne tourne : le test interroge la génération en arrière-plan dans une boucle. La fenêtre de progression et la fenêtre de choix des variantes ne peuvent être testées qu'à la main. Il affiche `ROUNDTRIP OK` en cas de succès ; Aseprite renvoie toujours le code 0, c'est donc ce message qui fait foi. Avec `backend=comfyui`, ComfyUI doit tourner :
 
 ```bash
 aseprite -b --script-param bridge="$(poetry env info -p)/bin/ai-inpaint-bridge" --script-param backend=invert --script-param mode=rgb --script-param variants=3 --script tests/roundtrip.lua
@@ -451,6 +496,8 @@ Fichiers utilisés, dans `models/` de ComfyUI :
 - `loras/klein4b-base-pixel-4walk-svntax.safetensors` (`pixel_4walk_small_flux2_klein_base_4b_v1.safetensors` de [svntax-dev/pixel_spritesheet_4walk_small_lora_v1](https://huggingface.co/svntax-dev/pixel_spritesheet_4walk_small_lora_v1), version à 3000 étapes que la fiche conseille pour les personnages humanoïdes, renommée)
 
 ## Limites connues
+
+- Tile : une seule matière par tile, sans transition. Les matières à motif régulier (dalles) donnent des joints moins nets qu'à la main : un joint de 3 px dans le dessin devient un pixel gris moyen. La tile n'est pas posée dans le tileset d'un calque tilemap Aseprite : elle arrive dans un calque normal ou un nouveau sprite.
 
 - Rotations : 4 directions seulement, pas de diagonales. Le personnage doit être dessiné de face. La vue de dos reste de face sur environ 1 variante sur 4 et la cape change de longueur entre le profil et le dos. Le miroir change de main un objet tenu d'un seul côté. Chaque vue est réduite au cadre du personnage de face : une partie qui dépasse ce cadre (cape étalée de profil) est coupée.
 

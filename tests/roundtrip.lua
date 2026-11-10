@@ -276,6 +276,35 @@ local function assert_walk_tags(sprite, first)
   assert(tags.lying.fromFrame.frameNumber == first + 15, "the last pose is not last")
 end
 
+-- Tile: a square drawn from the material, previewed repeated 3 x 3, fully opaque.
+local tile_options = {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "tile",
+  prompt = "grass",
+  size = Size(16, 16),
+  use_palette = true,
+  variants = variants,
+}
+local tile_layers = #character_sprite.layers
+local tile_job = assert(inpaint.generate(character_sprite, character_sprite.frames[1],
+                                         tile_options))
+assert(tile_job.region == Rectangle(-4, -4, 16, 16), "the tile is not centered: "
+       .. tostring(tile_job.region))
+assert(tile_job.preview_repeat == 3, "the tile is not previewed repeated")
+assert(#tile_job.previews == variants, "the tile run returned the wrong variant count")
+for i, preview in ipairs(tile_job.previews) do
+  assert_in_palette(preview, character_sprite.palettes[1], "tile variant " .. i)
+  for pixel in preview:pixels() do
+    assert(app.pixelColor.rgbaA(pixel()) == 255, "tile variant " .. i .. " has a hole")
+  end
+end
+inpaint.apply_new_layer(character_sprite, character_sprite.frames[1], tile_job, 1)
+assert(#character_sprite.layers == tile_layers + 1
+       and character_sprite.layers[#character_sprite.layers].name == "AI tile",
+       "expected the AI tile layer")
+character_sprite:deleteLayer(character_sprite.layers[#character_sprite.layers])
+
 local walk_sprite = character_sprite
 local frames_before = #walk_sprite.frames
 local walk_job = assert(inpaint.generate(walk_sprite, walk_sprite.frames[1], walk_options))

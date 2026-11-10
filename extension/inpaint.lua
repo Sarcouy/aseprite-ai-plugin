@@ -2,6 +2,9 @@ local inpaint = {}
 
 local LAYER_NAME = "AI inpaint"
 local CHARACTER_LAYER_NAME = "AI character"
+local TILE_LAYER_NAME = "AI tile"
+-- A tile is previewed repeated TILE_PREVIEW_REPEAT times in both directions.
+local TILE_PREVIEW_REPEAT = 3
 local WALK_LAYER_NAME = "AI walk"
 -- The walk sheet is GRID x GRID frames of WALK_FRAME pixels: each row holds
 -- WALK_STEPS walking frames of one direction, then one pose.
@@ -323,6 +326,11 @@ local function prepare(sprite, frame, options)
   if options.task == "character" then
     return prepare_drawing(sprite, options, options.size, CHARACTER_LAYER_NAME)
   end
+  if options.task == "tile" then
+    local run = prepare_drawing(sprite, options, options.size, TILE_LAYER_NAME)
+    run.preview_repeat = TILE_PREVIEW_REPEAT
+    return run
+  end
   if options.task == "walk-sheet" then
     return prepare_walk(sprite, frame, options)
   end
@@ -376,7 +384,8 @@ local function finish(run, ok, output)
   end
   return { region = run.region, mask = run.mask, original = run.original, previews = results,
            patches = patches, layer_name = run.layer_name, palette = run.palette,
-           walk = run.walk, origin = run.origin, animation = run.animation }
+           walk = run.walk, origin = run.origin, animation = run.animation,
+           preview_repeat = run.preview_repeat }
 end
 
 -- Runs the bridge and waits for it: Aseprite is frozen meanwhile. Used by the

@@ -117,18 +117,19 @@ def test_view_drawn_empty_gives_an_empty_frame() -> None:
 def test_invert_backend_writes_a_strip_per_variant(tmp_path: Path) -> None:
     """Offline runs give the character in every direction, mirrored to the left."""
     character().save(tmp_path / "ref.png")
-    argv = ["--task", "rotate", "--output", str(tmp_path / "out.png")]
-    argv += ["--reference", str(tmp_path / "ref.png"), "--variants", "2"]
+    output = tmp_path / "out.png"
+    argv = ["--task", "rotate", "--reference", str(tmp_path / "ref.png")]
 
-    assert parse_args(argv).context.model is KLEIN_4B
-    assert main(argv) == 0
+    assert parse_args([*argv, "--output", str(output)]).context.model is KLEIN_4B
+    assert main([*argv, "--output", str(output), "--variants", "2"]) == 0
 
-    for index in (1, 2):
-        with Image.open(tmp_path / f"out-{index}.png") as output:
-            assert output.size == (16 * 4, 24)
-            frames = frames_of(output.convert("RGBA"), 16)
-            assert data(frames[1]) == data(ImageOps.mirror(character()))
-            assert data(frames[3]) == data(character())
+    strips = [Image.open(tmp_path / f"out-{index}.png") for index in (1, 2)]
+    for strip in strips:
+        frames = frames_of(strip.convert("RGBA"), 16)
+        assert len(frames) == 4 and strip.height == 24
+        assert data(frames[1]) == data(ImageOps.mirror(character()))
+        assert data(frames[3]) == data(character())
+        strip.close()
 
 
 def test_empty_character_is_refused(
