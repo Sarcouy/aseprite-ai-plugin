@@ -5,6 +5,11 @@ local CHARACTER_LAYER_NAME = "AI character"
 local TILE_LAYER_NAME = "AI tile"
 -- A tile is previewed repeated TILE_PREVIEW_REPEAT times in both directions.
 local TILE_PREVIEW_REPEAT = 3
+-- The autotile sheet is AUTOTILE_GRID x AUTOTILE_GRID wang tiles; it repeats
+-- without seams and is previewed AUTOTILE_PREVIEW_REPEAT times.
+local AUTOTILE_LAYER_NAME = "AI autotile"
+local AUTOTILE_GRID = 4
+local AUTOTILE_PREVIEW_REPEAT = 2
 local WALK_LAYER_NAME = "AI walk"
 -- The walk sheet is GRID x GRID frames of WALK_FRAME pixels: each row holds
 -- WALK_STEPS walking frames of one direction, then one pose.
@@ -138,6 +143,9 @@ local function bridge_command(options, paths)
   end
   if options.animation then
     cmd = cmd .. " --animation " .. shell_quote(options.animation)
+  end
+  if options.second then
+    cmd = cmd .. " --second " .. shell_quote(options.second)
   end
   return cmd
 end
@@ -331,6 +339,14 @@ local function prepare(sprite, frame, options)
     run.preview_repeat = TILE_PREVIEW_REPEAT
     return run
   end
+  if options.task == "autotile" then
+    local size = options.size
+    local sheet = Size(size.width * AUTOTILE_GRID, size.height * AUTOTILE_GRID)
+    local run = prepare_drawing(sprite, options, sheet, AUTOTILE_LAYER_NAME)
+    run.preview_repeat = AUTOTILE_PREVIEW_REPEAT
+    run.tilemap = size
+    return run
+  end
   if options.task == "walk-sheet" then
     return prepare_walk(sprite, frame, options)
   end
@@ -385,7 +401,7 @@ local function finish(run, ok, output)
   return { region = run.region, mask = run.mask, original = run.original, previews = results,
            patches = patches, layer_name = run.layer_name, palette = run.palette,
            walk = run.walk, origin = run.origin, animation = run.animation,
-           preview_repeat = run.preview_repeat }
+           preview_repeat = run.preview_repeat, tilemap = run.tilemap }
 end
 
 -- Runs the bridge and waits for it: Aseprite is frozen meanwhile. Used by the
@@ -548,6 +564,50 @@ function inpaint.apply_new_sprite(job, index)
     inpaint.apply_new_layer(sprite, sprite.frames[1], placed, index)
   else
     inpaint.apply_all_layers(sprite, sprite.frames[1], placed)
+  end
+  sprite:deleteLayer(first)
+  return sprite
+end
+
+-- Adds a tilemap layer to the active sprite: its tileset holds the tiles of
+-- the sheet in reading order, its tilemap lays them out as in the sheet.
+local function add_tilemap_layer(sprite, sheet, tile, name)
+  app.command.NewLayer{ tilemap = true }
+  local layer = app.layer
+  layer.name = name
+  local map = Image(AUTOTILE_GRID, AUTOTILE_GRID, ColorMode.TILEMAP)
+  for row = 0, AUTOTILE_GRID - 1 do
+    for column = 0, AUTOTILE_GRID - 1 do
+      local image = Image(tile.width, tile.height, ColorMode.RGB)
+      image:drawImage(sheet, Point(-column * tile.width, -row * tile.height))
+      local entry = sprite:newTile(layer.tileset)
+      entry.image = image
+      map:drawPixel(column, row, entry.index)
+    end
+  end
+  sprite:newCel(layer, 1, map, Point(0, 0))
+  return layer
+end
+
+-- Creates an RGB sprite holding the autotile sheet of the chosen variant, or
+-- of every variant when index is nil, as tilemap layers on a grid of the tile
+-- size. Returns the sprite.
+function inpaint.apply_tilemap(job, index)
+  local tile, region = job.tilemap, job.region
+  local sprite = Sprite(region.width, region.height, ColorMode.RGB)
+  sprite:setPalette(job.palette or previews_palette(job.previews))
+  sprite.gridBounds = Rectangle(0, 0, tile.width, tile.height)
+  local first = sprite.layers[1]
+  local chosen = index and { index } or {}
+  if not index then
+    for i = #job.previews, 1, -1 do
+      chosen[#chosen + 1] = i
+    end
+  end
+  for _, i in ipairs(chosen) do
+    local name = index and job.layer_name or "Variant " .. i
+    local layer = add_tilemap_layer(sprite, job.previews[i], tile, name)
+    layer.isVisible = index ~= nil or i == 1
   end
   sprite:deleteLayer(first)
   return sprite

@@ -305,6 +305,41 @@ assert(#character_sprite.layers == tile_layers + 1
        "expected the AI tile layer")
 character_sprite:deleteLayer(character_sprite.layers[#character_sprite.layers])
 
+-- Autotile: a sheet of 4 x 4 wang tiles, laid out as a tilemap in a new sprite.
+local autotile_job = assert(inpaint.generate(character_sprite, character_sprite.frames[1], {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "autotile",
+  prompt = "grass",
+  second = "dirt",
+  size = Size(16, 16),
+  use_palette = true,
+  variants = variants,
+  new_sprite = true,
+}))
+assert(autotile_job.region == Rectangle(0, 0, 64, 64), "unexpected autotile region: "
+       .. tostring(autotile_job.region))
+assert(autotile_job.tilemap == Size(16, 16) and autotile_job.preview_repeat == 2,
+       "the autotile is not a previewed tilemap")
+for i, preview in ipairs(autotile_job.previews) do
+  assert_in_palette(preview, character_sprite.palettes[1], "autotile variant " .. i)
+end
+local tilemap_sprite = inpaint.apply_tilemap(autotile_job, nil)
+assert(#tilemap_sprite.layers == variants, "expected one tilemap layer per variant")
+assert(tilemap_sprite.gridBounds == Rectangle(0, 0, 16, 16), "the grid is not the tile size")
+for i, layer in ipairs(tilemap_sprite.layers) do
+  assert(layer.isTilemap and #layer.tileset == 17, "layer " .. i .. " is not a 16-tile tilemap")
+  assert(layer.isVisible == (layer.name == "Variant 1"), "only the first variant is visible")
+end
+local rendered = Image(64, 64, ColorMode.RGB)
+rendered:drawSprite(tilemap_sprite, 1)
+for pixel in rendered:pixels() do
+  assert(pixel() == autotile_job.previews[1]:getPixel(pixel.x, pixel.y),
+         "the tilemap does not reproduce the sheet")
+end
+tilemap_sprite:close()
+app.sprite = character_sprite
+
 local walk_sprite = character_sprite
 local frames_before = #walk_sprite.frames
 local walk_job = assert(inpaint.generate(walk_sprite, walk_sprite.frames[1], walk_options))

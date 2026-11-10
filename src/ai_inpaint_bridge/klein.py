@@ -387,28 +387,32 @@ def _wrapped(workflow: Workflow, samples: Link, cells: int, batch_size: int) -> 
     return wrapped
 
 
-def build_klein_tile_workflow(
-    settings: InpaintSettings, width: int, height: int
-) -> Workflow:
-    """Return the API-format graph: text to an image that repeats without seams.
-
-    Each step is sampled alone; between two steps the latent is rolled by half
-    its size, so that its edges meet in the middle, where the model paints
-    across them. The latent is decoded surrounded by its opposite edges, and
-    cropped back, so that the decoder sees no edge either. The square side
-    must be a multiple of 256 pixels: the rolled halves are at least
-    WRAP_CELLS latent cells wide.
-    """
+def _check_tile_size(width: int, height: int) -> int:
+    """Latent cells of the side of a square of 256 x n pixels."""
     cells = width // LATENT_SCALE
     if width != height or cells % (2 * WRAP_CELLS):
         raise ValueError(
             f"a tile is drawn on a square of 256 x n pixels, not {width}x{height}"
         )
-    sigmas = klein_sigmas(replace(settings, denoise=1.0), width, height)
-    workflow = build_klein_text_workflow(settings, width, height)
+    return cells
+
+
+def _seamless(
+    workflow: Workflow,
+    settings: InpaintSettings,
+    start: Link,
+    sigmas: list[float],
+    width: int,
+) -> Workflow:
+    """Sample the start latent step by step, rolled by half between two steps.
+
+    The latent is decoded surrounded by its opposite edges and cropped back,
+    so that neither the model nor the decoder sees an edge.
+    """
+    cells = width // LATENT_SCALE
     del workflow["15"], workflow["19"]
     workflow["40"] = {"class_type": "DisableNoise", "inputs": {}}
-    latent: Link = ["7", 0]
+    latent = start
     for step in range(settings.steps):
         if step:
             latent = _half_roll(workflow, f"r{step}", latent, cells)
@@ -436,13 +440,53 @@ def build_klein_tile_workflow(
         "inputs": {
             "image": ["10", 0],
             "width": width,
-            "height": height,
+            "height": width,
             "x": margin,
             "y": margin,
         },
     }
     workflow[OUTPUT_NODE]["inputs"]["images"] = ["54", 0]
     return workflow
+
+
+def build_klein_tile_workflow(
+    settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: text to an image that repeats without seams.
+
+    Each step is sampled alone; between two steps the latent is rolled by half
+    its size, so that its edges meet in the middle, where the model paints
+    across them. The square side must be a multiple of 256 pixels: the rolled
+    halves are at least WRAP_CELLS latent cells wide.
+    """
+    _check_tile_size(width, height)
+    sigmas = klein_sigmas(replace(settings, denoise=1.0), width, height)
+    workflow = build_klein_text_workflow(settings, width, height)
+    return _seamless(workflow, settings, ["7", 0], sigmas, width)
+
+
+def build_klein_tile_redraw_workflow(
+    image_name: str, settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: an image redrawn so that it repeats without seams.
+
+    Sampling starts from the encoded image noised to settings.denoise, then
+    goes on as in build_klein_tile_workflow.
+    """
+    _check_tile_size(width, height)
+    sigmas = klein_sigmas(settings, width, height)
+    workflow = build_klein_text_workflow(settings, width, height)
+    del workflow["7"]
+    workflow["5"] = {"class_type": "LoadImage", "inputs": {"image": image_name}}
+    workflow["8"] = {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": ["5", 0], "vae": ["3", 0]},
+    }
+    workflow["9"] = {
+        "class_type": "RepeatLatentBatch",
+        "inputs": {"samples": ["8", 0], "amount": settings.batch_size},
+    }
+    return _seamless(workflow, settings, ["9", 0], sigmas, width)
 
 
 KLEIN_4B = ModelProfile(
@@ -470,5 +514,8 @@ KLEIN_4B_BASE_WALK = replace(
 )
 
 KLEIN_4B_TILE = replace(
-    KLEIN_4B, name="klein-4b-tile", build_text=build_klein_tile_workflow
+    KLEIN_4B,
+    name="klein-4b-tile",
+    build_text=build_klein_tile_workflow,
+    build_redraw=build_klein_tile_redraw_workflow,
 )

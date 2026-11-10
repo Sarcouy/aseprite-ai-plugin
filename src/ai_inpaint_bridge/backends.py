@@ -58,6 +58,17 @@ class ReferenceGenerator(
         """Return settings.batch_size RGB images of the given size."""
 
 
+class RedrawGenerator(
+    Protocol
+):  # pylint: disable=too-few-public-methods  # a protocol describing one callable capability
+    """Anything able to redraw an image, keeping its layout."""
+
+    def generate_redraw(
+        self, image: Image.Image, settings: InpaintSettings
+    ) -> list[Image.Image]:
+        """Return settings.batch_size RGB images of the size of the image."""
+
+
 class GuidedGenerator(
     Protocol
 ):  # pylint: disable=too-few-public-methods  # a protocol describing one callable capability

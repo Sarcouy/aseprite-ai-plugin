@@ -2,6 +2,7 @@
 
 from ai_inpaint_bridge.tasks import (
     animation,
+    autotile,
     character,
     inpaint,
     rotate,
@@ -19,6 +20,7 @@ TASKS: dict[str, Task] = {
         animation.TASK,
         rotate.TASK,
         tile.TASK,
+        autotile.TASK,
     )
 }
 DEFAULT_TASK = inpaint.TASK.name

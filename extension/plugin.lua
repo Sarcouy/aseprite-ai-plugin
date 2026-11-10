@@ -23,11 +23,16 @@ local DEFAULT_PREFERENCES = {
   tile_prompt = "",
   tile_size = "32",
   tile_output = "New layer",
+  autotile_prompt = "",
+  autotile_second = "",
+  autotile_size = "32",
+  autotile_output = "New tilemap",
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
 local CHARACTER_SIZES = { "16", "24", "32", "48", "64" }
 local TILE_SIZES = { "16", "32" }
+local AUTOTILE_OUTPUTS = { "New tilemap", "New layer" }
 local WALK_OUTPUTS = { "New sprite", "New frames" }
 local BACKENDS = { "comfyui", "invert" }
 local ANIMATIONS = { "idle" }
@@ -179,6 +184,37 @@ local function ask_tile(prefs)
 end
 
 -- Returns false when the user cancels.
+local function ask_autotile(prefs)
+  local dlg = Dialog("AI Autotile")
+  dlg:entry{ id = "prompt", label = "Material", text = prefs.autotile_prompt, focus = true }
+  dlg:entry{ id = "second", label = "Patches of", text = prefs.autotile_second }
+  dlg:combobox{ id = "size", label = "Tile size (px)", option = prefs.autotile_size,
+                options = TILE_SIZES }
+  dlg:check{ id = "use_palette", text = "Use the sprite palette", selected = prefs.use_palette }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_VARIANTS,
+              value = prefs.variants }
+  dlg:combobox{ id = "output", label = "Output", option = prefs.autotile_output,
+                options = AUTOTILE_OUTPUTS }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  if dlg.data.prompt:match("^%s*$") or dlg.data.second:match("^%s*$") then
+    app.alert{ title = "AI", text = "Describe both materials of the autotile." }
+    return false
+  end
+  prefs.autotile_prompt = dlg.data.prompt
+  prefs.autotile_second = dlg.data.second
+  prefs.autotile_size = dlg.data.size
+  prefs.use_palette = dlg.data.use_palette
+  prefs.variants = dlg.data.variants
+  prefs.autotile_output = dlg.data.output
+  return true
+end
+
+-- Returns false when the user cancels.
 local function ask_walk(prefs)
   local dlg = Dialog("AI Walk Sheet")
   dlg:check{ id = "from_sprite", text = "Animate the active sprite (or its selection)",
@@ -292,6 +328,21 @@ local function tile_options(prefs)
   options.prompt = prefs.tile_prompt ~= "" and prefs.tile_prompt or "grass"
   options.size = Size(size, size)
   options.new_sprite = tile_output(prefs) == "New sprite"
+  return options
+end
+
+-- Without a sprite open the autotile always goes to a new tilemap sprite.
+local function autotile_output(prefs)
+  return app.sprite and prefs.autotile_output or "New tilemap"
+end
+
+local function autotile_options(prefs)
+  local options = common_options(prefs)
+  local size = tonumber(prefs.autotile_size) or 32
+  options.prompt = prefs.autotile_prompt ~= "" and prefs.autotile_prompt or "grass"
+  options.second = prefs.autotile_second ~= "" and prefs.autotile_second or "dirt"
+  options.size = Size(size, size)
+  options.new_sprite = autotile_output(prefs) == "New tilemap"
   return options
 end
 
@@ -485,7 +536,9 @@ local function apply_job(sprite, frame, job, target)
       inpaint.apply_animation(sprite, job, choice == "one" and index or nil)
     end
   elseif not sprite then
-    if choice then
+    if choice and job.tilemap then
+      inpaint.apply_tilemap(job, choice == "one" and index or nil)
+    elseif choice then
       inpaint.apply_new_sprite(job, choice == "one" and index or nil)
     end
   elseif choice == "one" then
@@ -534,6 +587,18 @@ local function task_entries()
       ask = ask_tile,
       options = tile_options,
       output = tile_output,
+      start = inpaint.start,
+    },
+    {
+      name = "autotile",
+      command_id = "AiGenerateAutotile",
+      title = "Generate Autotile",
+      enabled = function()
+        return running == nil
+      end,
+      ask = ask_autotile,
+      options = autotile_options,
+      output = autotile_output,
       start = inpaint.start,
     },
     {

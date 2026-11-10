@@ -210,7 +210,8 @@ class ModelProfile:
     build_reference, when the model has one, draws at the given size from
     the prompt and an uploaded reference image. build_guided, when the model
     has one, redraws an uploaded guide at the given size, with the uploaded
-    reference image for the look.
+    reference image for the look. build_redraw, when the model has one,
+    redraws an uploaded image of the given size, noised to settings.denoise.
     """
 
     name: str
@@ -219,6 +220,7 @@ class ModelProfile:
     build_text: TextWorkflowBuilder
     build_reference: ReferenceWorkflowBuilder | None = None
     build_guided: GuidedWorkflowBuilder | None = None
+    build_redraw: ReferenceWorkflowBuilder | None = None
 
 
 SD15_INPAINT = ModelProfile(
@@ -293,6 +295,16 @@ class ComfyUIClient:
         name = self._upload(reference, "aseprite-ai-inpaint-reference.png")
         guide_name = self._upload(guide, "aseprite-ai-inpaint-guide.png")
         return self._run(build(name, guide_name, settings, *guide.size))
+
+    def generate_redraw(
+        self, image: Image.Image, settings: InpaintSettings
+    ) -> list[Image.Image]:
+        """Redraw the image, noised to settings.denoise, in batch order."""
+        build = self._model.build_redraw
+        if build is None:
+            raise ComfyUIError(f"{self._model.name} cannot redraw an image")
+        name = self._upload(image, "aseprite-ai-inpaint-redraw.png")
+        return self._run(build(name, settings, *image.size))
 
     def _run(self, workflow: Workflow) -> list[Image.Image]:
         prompt_id = self._queue(workflow)
