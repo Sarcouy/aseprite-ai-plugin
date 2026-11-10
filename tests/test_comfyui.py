@@ -9,6 +9,7 @@ from PIL import Image
 from ai_inpaint_bridge.comfyui import (
     LORA_TRIGGER,
     ComfyUIClient,
+    ComfyUIError,
     OUTPUT_NODE,
     INPAINT_UNET_NODE,
     REPEAT_NODE,
@@ -152,3 +153,12 @@ def test_trigger_word_only_comes_with_the_default_lora() -> None:
     workflow = build_inpaint_workflow("in.png", "mask.png", other)
 
     assert workflow["3"]["inputs"]["text"] == "a chest"
+
+
+def test_model_without_guided_graph_refuses_a_guide() -> None:
+    """SD 1.5 has no graph redrawing a guide: nothing is uploaded."""
+    client = ComfyUIClient(session=cast(requests.Session, FakeSession()))
+    image = Image.new("RGB", (8, 8))
+
+    with pytest.raises(ComfyUIError, match="cannot redraw a guide"):
+        client.generate_guided(image, image, InpaintSettings("", 0))

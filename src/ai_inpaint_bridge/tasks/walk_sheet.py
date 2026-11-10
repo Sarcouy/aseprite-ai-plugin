@@ -19,6 +19,7 @@ from ai_inpaint_bridge.pixelize import (
     pick_key_color,
     to_sprite_pixels,
 )
+from ai_inpaint_bridge.reference import reference_image
 from ai_inpaint_bridge.tasks.base import Task, TaskContext
 from ai_inpaint_bridge.tasks.character import PLACEHOLDER_COLOR, placeholder
 
@@ -248,27 +249,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="PNG of the character to animate, the description is then optional",
     )
-
-
-def reference_image(sprite: Image.Image, key: Color) -> Image.Image:
-    """The character trimmed to its pixels and enlarged without smoothing.
-
-    It is enlarged by the largest integer factor that fits the generation
-    size, and centered on the key color: drawn at the scale of the frames
-    (4 times), it is too small for the model to keep its look.
-    """
-    rgba = sprite.convert("RGBA")
-    box = rgba.getchannel("A").getbbox() or (0, 0, *rgba.size)
-    character = rgba.crop(box)
-    factor = max(1, GENERATION_SIZE // max(character.size))
-    big = character.resize(
-        (character.width * factor, character.height * factor),
-        Image.Resampling.NEAREST,
-    )
-    canvas = Image.new("RGB", (GENERATION_SIZE, GENERATION_SIZE), key)
-    position = ((canvas.width - big.width) // 2, (canvas.height - big.height) // 2)
-    canvas.paste(big, position, big)
-    return canvas
 
 
 def _sheets(

@@ -53,6 +53,7 @@ class InpaintSettings:  # pylint: disable=too-many-instance-attributes  # one fi
 WorkflowBuilder = Callable[[str, str, InpaintSettings, tuple[int, int]], Workflow]
 TextWorkflowBuilder = Callable[[InpaintSettings, int, int], Workflow]
 ReferenceWorkflowBuilder = Callable[[str, InpaintSettings, int, int], Workflow]
+GuidedWorkflowBuilder = Callable[[str, str, InpaintSettings, int, int], Workflow]
 
 
 def load_image_nodes(image_name: str, mask_name: str) -> Workflow:
@@ -207,7 +208,9 @@ class ModelProfile:
     build_inpaint rewrites the masked area of an uploaded image of the given
     size, build_text draws from the prompt alone at the given size and
     build_reference, when the model has one, draws at the given size from
-    the prompt and an uploaded reference image.
+    the prompt and an uploaded reference image. build_guided, when the model
+    has one, redraws an uploaded guide at the given size, with the uploaded
+    reference image for the look.
     """
 
     name: str
@@ -215,6 +218,7 @@ class ModelProfile:
     build_inpaint: WorkflowBuilder
     build_text: TextWorkflowBuilder
     build_reference: ReferenceWorkflowBuilder | None = None
+    build_guided: GuidedWorkflowBuilder | None = None
 
 
 SD15_INPAINT = ModelProfile(
@@ -275,6 +279,20 @@ class ComfyUIClient:
             raise ComfyUIError(f"{self._model.name} cannot draw from a reference image")
         name = self._upload(reference, "aseprite-ai-inpaint-reference.png")
         return self._run(build(name, settings, width, height))
+
+    def generate_guided(
+        self,
+        reference: Image.Image,
+        guide: Image.Image,
+        settings: InpaintSettings,
+    ) -> list[Image.Image]:
+        """Redraw the guide, with the reference for the look, in batch order."""
+        build = self._model.build_guided
+        if build is None:
+            raise ComfyUIError(f"{self._model.name} cannot redraw a guide")
+        name = self._upload(reference, "aseprite-ai-inpaint-reference.png")
+        guide_name = self._upload(guide, "aseprite-ai-inpaint-guide.png")
+        return self._run(build(name, guide_name, settings, *guide.size))
 
     def _run(self, workflow: Workflow) -> list[Image.Image]:
         prompt_id = self._queue(workflow)

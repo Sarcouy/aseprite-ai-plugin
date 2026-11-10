@@ -9,6 +9,7 @@ from ai_inpaint_bridge.cli import main, parse_args
 from ai_inpaint_bridge.comfyui import InpaintSettings
 from ai_inpaint_bridge.klein import KLEIN_4B_BASE_WALK, SVNTAX_LORA
 from ai_inpaint_bridge.pixelize import Color, foreground_mask, pixel_tuples
+from ai_inpaint_bridge.reference import reference_image
 from ai_inpaint_bridge.tasks import TASKS
 from ai_inpaint_bridge.tasks.walk_sheet import (
     FRAME,
@@ -19,7 +20,6 @@ from ai_inpaint_bridge.tasks.walk_sheet import (
     generate_walk_sheets_from,
     group_bands,
     locate_cells,
-    reference_image,
     slice_sheet,
     walk_prompt,
 )

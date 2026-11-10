@@ -10,6 +10,7 @@ from ai_inpaint_bridge.klein import (
     KLEIN_BASE_UNET,
     KLEIN_UNET,
     KLEIN_SETTINGS,
+    build_klein_guided_workflow,
     build_klein_inpaint_workflow,
     build_klein_reference_workflow,
     build_klein_text_workflow,
@@ -171,3 +172,25 @@ def test_reference_workflow_with_cfg_1_zeroes_the_referenced_prompt() -> None:
 
     assert workflow["13"]["inputs"]["conditioning"] == ["20", 0]
     assert workflow["18"]["inputs"]["negative"] == ["13", 0]
+
+
+def test_guided_workflow_starts_from_the_guide() -> None:
+    """The noised guide is the starting latent, the image the reference only."""
+    settings = replace(KLEIN_SETTINGS, prompt="a knight", denoise=0.5, batch_size=2)
+
+    workflow = build_klein_guided_workflow("ref.png", "guide.png", settings, 512, 512)
+
+    assert workflow["5"]["inputs"] == {"image": "ref.png"}
+    assert workflow["6"]["inputs"] == {"image": "guide.png"}
+    assert workflow["7"]["inputs"]["pixels"] == ["6", 0]
+    assert workflow["8"]["inputs"] == {"samples": ["7", 0], "amount": 2}
+    assert workflow["19"]["inputs"]["latent_image"] == ["8", 0]
+    assert workflow["20"]["inputs"] == {"conditioning": ["4", 0], "latent": ["9", 0]}
+    assert workflow["9"]["inputs"]["pixels"] == ["5", 0]
+    sigmas = [float(x) for x in workflow["15"]["inputs"]["sigmas"].split(", ")]
+    assert sigmas == pytest.approx(klein_sigmas(settings, 512, 512), abs=1e-9)
+    assert sigmas[0] < 1
+    for node in workflow.values():
+        for value in node["inputs"].values():
+            if isinstance(value, list):
+                assert value[0] in workflow

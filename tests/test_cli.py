@@ -6,7 +6,14 @@ from PIL import Image
 
 import pytest
 
-from ai_inpaint_bridge.cli import load_palette, main, parse_args, variant_path
+from ai_inpaint_bridge.cli import (
+    URL_VARIABLE,
+    load_palette,
+    main,
+    parse_args,
+    variant_path,
+)
+from ai_inpaint_bridge.comfyui import DEFAULT_URL
 from ai_inpaint_bridge.tasks import TASKS
 
 RED = (200, 10, 30, 255)
@@ -123,3 +130,17 @@ def test_klein_is_the_default_model(tmp_path: Path) -> None:
     assert request.context.model.name == "sd15-inpaint"
     with pytest.raises(SystemExit):
         parse_args([*write_inputs(tmp_path), "--model", "sdxl"])
+
+
+def test_server_url_comes_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """COMFYUI_URL points the extension at a remote server, --comfyui-url wins."""
+    argv = write_inputs(tmp_path)
+    monkeypatch.delenv(URL_VARIABLE, raising=False)
+    assert parse_args(argv).context.comfyui_url == DEFAULT_URL
+
+    monkeypatch.setenv(URL_VARIABLE, "http://gpu-box:8188")
+    assert parse_args(argv).context.comfyui_url == "http://gpu-box:8188"
+    explicit = [*argv, "--comfyui-url", "http://other:8188"]
+    assert parse_args(explicit).context.comfyui_url == "http://other:8188"

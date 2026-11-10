@@ -325,5 +325,60 @@ assert_walk_tags(walk, 1)
 assert(#walk.layers == 1 and walk.layers[1].isGroup, "expected one group of variants")
 assert(#walk.layers[1].layers == walk_variants, "expected one layer per variant")
 
+-- Animation: the character of the active sprite, its frames added after the
+-- last one and tagged with the animation name. Each pose is a guide redrawn by klein.
+local animation_options = {
+  bridge_command = app.params.bridge,
+  backend = backend,
+  task = "animation",
+  animation = "idle",
+  prompt = "",
+  use_palette = true,
+  variants = walk_variants,
+}
+local no_sprite, no_sprite_message = inpaint.start(nil, nil, animation_options)
+assert(no_sprite == nil and no_sprite_message:find("Open the sprite", 1, true),
+       "an animation without sprite was started")
+-- A character of two colors: the placeholder poses, its guides, move the blue pixel.
+local animated = make_sprite(mode)
+animated:setPalette(Palette(character_sprite.palettes[1]))
+local animated_cel = animated.layers[1]:cel(1)
+local two_colors = animated_cel.image:clone()
+two_colors:drawPixel(1, 1, mode == "indexed" and 3 or app.pixelColor.rgba(20, 40, 220, 255))
+animated_cel.image = two_colors
+local animated_before = #animated.frames
+local original_frame = Image(animated.width, animated.height, animated.colorMode)
+original_frame:drawSprite(animated, 1)
+local animation_run = assert(inpaint.start(animated, animated.frames[1], animation_options))
+assert(animation_run.command:find("--animation", 1, true), "the animation is not sent")
+local animation_finished, animation_job = wait_run(animation_run, 900)
+assert(animation_finished, animation_job)
+assert(not app.fs.isFile(animation_run.paths.reference), "the reference file was left")
+assert(animation_job.region == Rectangle(0, 0, 4 * animated.width, animated.height + 1),
+       "the animation region lacks the row the head rises into")
+assert(#animation_job.previews == walk_variants, "the animation returned the wrong variant count")
+for i, preview in ipairs(animation_job.previews) do
+  assert_in_palette(preview, animated.palettes[1], "animation " .. i)
+end
+inpaint.apply_animation(animated, animation_job, nil)
+assert(#animated.frames == animated_before + 4, "expected 4 new frames")
+local idle_tag = animated.tags[#animated.tags]
+assert(idle_tag.name == "idle" and idle_tag.fromFrame.frameNumber == animated_before + 1
+       and idle_tag.toFrame.frameNumber == animated_before + 4, "unexpected idle tag")
+local animation_group = animated.layers[#animated.layers]
+assert(animation_group.isGroup and animation_group.name == "AI idle", "expected the AI idle group")
+assert(#animation_group.layers == walk_variants, "expected one layer per variant")
+local idle_cel = animation_group.layers[1]:cel(animated_before + 1)
+assert(idle_cel, "the idle frame is missing")
+local frame_one = Image(animated.width, animated.height, animated.colorMode)
+frame_one:drawImage(idle_cel.image, idle_cel.position)
+assert(frame_one:isEqual(original_frame), "the first idle frame is not the character")
+if backend == "invert" then
+  local posed = animation_group.layers[1]:cel(animated_before + 2)
+  assert(not posed.image:isEqual(idle_cel.image), "the placeholder pose did not change")
+  local raised = animation_group.layers[1]:cel(animated_before + 4)
+  assert(raised.bounds.y == -1, "the head did not rise above the character")
+end
+
 print("ROUNDTRIP OK (" .. mode .. ", " .. backend .. ", " .. (app.params.model or "default model")
       .. ", " .. variants .. " variants)")

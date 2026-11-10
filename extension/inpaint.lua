@@ -11,6 +11,11 @@ local WALK_STEPS = 3
 local WALK_DURATION = 0.15
 local WALK_TAGS = { "down", "left", "right", "up" }
 local POSE_TAGS = { "arms raised", "jump left", "jump right", "lying" }
+-- Frames of each animation of the bridge, in the order of its strip.
+local ANIMATION_FRAMES = { idle = 4 }
+local ANIMATION_DURATION = 0.25
+-- Transparent rows above the character, where its head rises when it breathes in.
+local ANIMATION_HEADROOM = 1
 local WHITE = app.pixelColor.rgba(255, 255, 255, 255)
 local pc = app.pixelColor
 
@@ -124,6 +129,9 @@ local function bridge_command(options, paths)
   end
   if paths.reference then
     cmd = cmd .. " --reference " .. shell_quote(paths.reference)
+  end
+  if options.animation then
+    cmd = cmd .. " --animation " .. shell_quote(options.animation)
   end
   return cmd
 end
@@ -257,6 +265,38 @@ local function prepare_walk(sprite, frame, options)
   return run
 end
 
+-- The character to animate is the frame of the active sprite, cut to the
+-- selection if any. The bridge returns the frames side by side, they are put
+-- back in new frames at the place of the character.
+local function prepare_animation(sprite, frame, options)
+  if not sprite then
+    return nil, "Open the sprite of the character to animate first."
+  end
+  local count = ANIMATION_FRAMES[options.animation]
+  if not count then
+    return nil, "Unknown animation: " .. tostring(options.animation)
+  end
+  local area = sprite.selection.isEmpty and sprite.bounds
+               or sprite.selection.bounds:intersect(sprite.bounds)
+  if area.isEmpty then
+    return nil, "The selection is outside the canvas."
+  end
+  local character = render_region(sprite, frame, area)
+  if character:isEmpty() then
+    return nil, "The character to animate is empty."
+  end
+  local height = area.height + ANIMATION_HEADROOM
+  local reference = Image(area.width, height, ColorMode.RGB)
+  reference:drawImage(character, Point(0, ANIMATION_HEADROOM))
+  local layer_name = "AI " .. options.animation
+  local run = prepare_drawing(sprite, options, Size(area.width * count, height),
+                              layer_name, reference)
+  run.region = Rectangle(0, 0, area.width * count, height)
+  run.origin = Point(area.x, area.y - ANIMATION_HEADROOM)
+  run.animation = { name = options.animation, count = count, width = area.width }
+  return run
+end
+
 -- Writes the region, its mask and the palette, and returns a run holding what
 -- the result needs, or nil and a message for the user.
 local function prepare(sprite, frame, options)
@@ -268,6 +308,9 @@ local function prepare(sprite, frame, options)
   end
   if options.task == "walk-sheet" then
     return prepare_walk(sprite, frame, options)
+  end
+  if options.task == "animation" then
+    return prepare_animation(sprite, frame, options)
   end
   local selection = sprite.selection
   if selection.isEmpty then
@@ -313,7 +356,7 @@ local function finish(run, ok, output)
   end
   return { region = run.region, mask = run.mask, original = run.original, previews = results,
            patches = patches, layer_name = run.layer_name, palette = run.palette,
-           walk = run.walk, origin = run.origin }
+           walk = run.walk, origin = run.origin, animation = run.animation }
 end
 
 -- Runs the bridge and waits for it: Aseprite is frozen meanwhile. Used by the
@@ -556,6 +599,47 @@ function inpaint.apply_walk(sprite, job, index)
     sprite:deleteLayer(default_layer)
   end
   return sprite
+end
+
+local function add_animation_layer(sprite, first, strip, job, name, parent)
+  local layer = sprite:newLayer()
+  layer.name = name
+  if parent then
+    layer.parent = parent
+  end
+  local width, height = job.animation.width, strip.height
+  for i = 0, job.animation.count - 1 do
+    local frame = Image(strip, Rectangle(i * width, 0, width, height))
+    sprite:newCel(layer, first + i, frame, job.origin)
+  end
+  return layer
+end
+
+-- Puts the frames of the chosen strip, or of every strip when index is nil,
+-- in new frames after the last one, tagged with the animation name, as a
+-- single undo step.
+function inpaint.apply_animation(sprite, job, index)
+  local count = job.animation.count
+  local name = job.layer_name
+  app.transaction(name, function()
+    local first = #sprite.frames + 1
+    for number = first, first + count - 1 do
+      sprite:newEmptyFrame(number)
+      sprite.frames[number].duration = ANIMATION_DURATION
+    end
+    if index then
+      add_animation_layer(sprite, first, job.patches[index], job, name)
+    else
+      local group = sprite:newGroup()
+      group.name = name
+      for i = #job.patches, 1, -1 do
+        local layer = add_animation_layer(sprite, first, job.patches[i], job, "Variant " .. i,
+                                          group)
+        layer.isVisible = i == 1
+      end
+    end
+    sprite:newTag(first, first + count - 1).name = job.animation.name
+  end)
 end
 
 -- Returns nil when the layer can receive a patch, otherwise a message for the user.

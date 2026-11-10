@@ -15,18 +15,24 @@ local DEFAULT_PREFERENCES = {
   walk_output = "New sprite",
   walk_from_sprite = false,
   walk_variants = 2,
+  animation = "idle",
+  animation_prompt = "",
+  animation_variants = 2,
 }
 local OUTPUTS = { "New layer", "Active layer" }
 local CHARACTER_OUTPUTS = { "New layer", "New sprite" }
 local CHARACTER_SIZES = { "16", "24", "32", "48", "64" }
 local WALK_OUTPUTS = { "New sprite", "New frames" }
 local BACKENDS = { "comfyui", "invert" }
+local ANIMATIONS = { "idle" }
 -- Models of the bridge's inpaint task, the first one is its default.
 local INPAINT_MODELS = { "klein-4b", "sd15-inpaint" }
 local MAX_ALERT_LINES = 15
 local MAX_VARIANTS = 8
 -- klein base was only measured up to a batch of 4 on 4 GB of VRAM.
 local MAX_WALK_VARIANTS = 4
+-- Each variant of an animation costs one klein redraw per pose.
+local MAX_ANIMATION_VARIANTS = 4
 local PREVIEW_COLUMNS = 4
 local PREVIEW_CELL = 160
 local PREVIEW_GAP = 8
@@ -168,6 +174,27 @@ local function ask_walk(prefs)
   return true
 end
 
+-- Returns false when the user cancels.
+local function ask_animation(prefs)
+  local dlg = Dialog("AI Animation")
+  dlg:combobox{ id = "animation", label = "Animation", option = prefs.animation,
+                options = ANIMATIONS }
+  dlg:entry{ id = "prompt", label = "Details", text = prefs.animation_prompt, focus = true }
+  dlg:slider{ id = "variants", label = "Variants", min = 1, max = MAX_ANIMATION_VARIANTS,
+              value = math.min(prefs.animation_variants, MAX_ANIMATION_VARIANTS) }
+  dlg:label{ text = "Animates the active sprite (or its selection)." }
+  dlg:button{ id = "ok", text = "Generate" }
+  dlg:button{ id = "cancel", text = "Cancel" }
+  dlg:show()
+  if not dlg.data.ok then
+    return false
+  end
+  prefs.animation = dlg.data.animation
+  prefs.animation_prompt = dlg.data.prompt
+  prefs.animation_variants = dlg.data.variants
+  return true
+end
+
 local function common_options(prefs)
   return {
     bridge_command = prefs.bridge_command,
@@ -216,6 +243,16 @@ local function walk_options(prefs)
     options.prompt = "a knight"
   end
   options.new_sprite = walk_output(prefs) == "New sprite"
+  return options
+end
+
+local function animation_options(prefs)
+  local options = common_options(prefs)
+  if prefs.backend == "comfyui" then
+    options.variants = math.min(prefs.animation_variants, MAX_ANIMATION_VARIANTS)
+  end
+  options.animation = prefs.animation
+  options.prompt = prefs.animation_prompt
   return options
 end
 
@@ -351,6 +388,10 @@ local function apply_job(sprite, frame, job, target)
     if choice then
       inpaint.apply_walk(sprite, job, choice == "one" and index or nil)
     end
+  elseif job.animation then
+    if choice then
+      inpaint.apply_animation(sprite, job, choice == "one" and index or nil)
+    end
   elseif not sprite then
     if choice then
       inpaint.apply_new_sprite(job, choice == "one" and index or nil)
@@ -401,6 +442,18 @@ local function task_entries()
       ask = ask_walk,
       options = walk_options,
       output = walk_output,
+      start = inpaint.start,
+    },
+    {
+      name = "animation",
+      command_id = "AiGenerateAnimation",
+      title = "Generate Animation",
+      enabled = function()
+        return running == nil and app.sprite ~= nil
+      end,
+      ask = ask_animation,
+      options = animation_options,
+      output = function() return "New frames" end,
       start = inpaint.start,
     },
   }

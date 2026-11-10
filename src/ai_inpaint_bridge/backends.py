@@ -57,6 +57,20 @@ class ReferenceGenerator(
         """Return settings.batch_size RGB images of the given size."""
 
 
+class GuidedGenerator(
+    Protocol
+):  # pylint: disable=too-few-public-methods  # a protocol describing one callable capability
+    """Anything able to redraw a guide image with the look of a reference image."""
+
+    def generate_guided(
+        self,
+        reference: Image.Image,
+        guide: Image.Image,
+        settings: InpaintSettings,
+    ) -> list[Image.Image]:
+        """Return settings.batch_size RGB images of the size of the guide."""
+
+
 def binarize_mask(mask: Image.Image) -> Image.Image:
     """Return a mode "1"-like L mask: 255 inside the selection, 0 outside."""
     return mask.convert("L").point(lambda value: 255 if value > MASK_THRESHOLD else 0)

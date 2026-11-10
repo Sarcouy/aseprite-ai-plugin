@@ -1,6 +1,7 @@
 """Command line entry point called by the Aseprite extension."""
 
 import argparse
+import os
 import random
 import signal
 import sys
@@ -18,6 +19,7 @@ from ai_inpaint_bridge.tasks import DEFAULT_TASK, TASKS
 from ai_inpaint_bridge.tasks.base import Task, TaskContext
 
 BACKENDS = ("invert", "comfyui")
+URL_VARIABLE = "COMFYUI_URL"
 MAX_SEED = 2**32 - 1
 MAX_VARIANTS = 8
 
@@ -76,7 +78,11 @@ def build_parser(task: Task) -> argparse.ArgumentParser:
         metavar=f"1..{MAX_VARIANTS}",
         help="number of results generated in one pass",
     )
-    parser.add_argument("--comfyui-url", default=DEFAULT_URL)
+    parser.add_argument(
+        "--comfyui-url",
+        default=os.environ.get(URL_VARIABLE, DEFAULT_URL),
+        help=f"ComfyUI server, {URL_VARIABLE} or {DEFAULT_URL} when omitted",
+    )
     parser.add_argument(
         "--palette", type=Path, help="PNG strip of the colors to snap to"
     )

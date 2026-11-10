@@ -257,11 +257,52 @@ def build_klein_reference_workflow(
     }
 
 
+def build_klein_guided_workflow(
+    image_name: str, guide_name: str, settings: InpaintSettings, width: int, height: int
+) -> Workflow:
+    """Return the API-format graph: the guide redrawn with the image as reference.
+
+    Sampling starts from the encoded guide, noised to settings.denoise: the
+    guide sets the pose, the reference latent on the prompt keeps the look.
+    """
+    sigmas = ", ".join(
+        f"{sigma:.10f}" for sigma in klein_sigmas(settings, width, height)
+    )
+    return {
+        **_klein_nodes(
+            settings,
+            positive=["20", 0],
+            latent=["8", 0],
+            sigmas={"class_type": "ManualSigmas", "inputs": {"sigmas": sigmas}},
+        ),
+        "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+        "6": {"class_type": "LoadImage", "inputs": {"image": guide_name}},
+        "7": {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": ["6", 0], "vae": ["3", 0]},
+        },
+        "8": {
+            "class_type": "RepeatLatentBatch",
+            "inputs": {"samples": ["7", 0], "amount": settings.batch_size},
+        },
+        "9": {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": ["5", 0], "vae": ["3", 0]},
+        },
+        "20": {
+            "class_type": "ReferenceLatent",
+            "inputs": {"conditioning": ["4", 0], "latent": ["9", 0]},
+        },
+    }
+
+
 KLEIN_4B = ModelProfile(
     name="klein-4b",
     settings=KLEIN_SETTINGS,
     build_inpaint=build_klein_inpaint_workflow,
     build_text=build_klein_text_workflow,
+    build_reference=build_klein_reference_workflow,
+    build_guided=build_klein_guided_workflow,
 )
 
 KLEIN_4B_BASE = ModelProfile(
