@@ -76,3 +76,20 @@ def test_registered_drawing_reduces_to_the_sprite() -> None:
     frame = sprite_on_grid(image, grid, DRAWN_KEY, shift, opaque_colors(sprite))
 
     assert list(frame.get_flattened_data()) == list(sprite.get_flattened_data())
+
+
+def test_subject_close_to_the_drawn_key_is_registered_and_kept() -> None:
+    """An orange character redrawn on golden yellow, 67 away, is not keyed out."""
+    sprite = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+    sprite.paste((255, 143, 58, 255), (8, 2, 24, 30))
+    sprite.paste((30, 20, 10, 255), (12, 4, 20, 12))
+    grid = reference_grid(sprite)
+    image = Image.new("RGB", (GENERATION_SIZE, GENERATION_SIZE), (254, 219, 61))
+    rgba = grid.place(sprite, KEY).convert("RGBA")
+    rgba.putalpha(grid.mask(sprite))
+    image.paste(rgba, (24, 12), rgba)
+
+    shift = registration(image, (254, 219, 61), grid, sprite)
+    frame = sprite_on_grid(image, grid, (254, 219, 61), shift, opaque_colors(sprite))
+
+    assert list(frame.get_flattened_data()) == list(sprite.get_flattened_data())

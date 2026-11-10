@@ -15,6 +15,7 @@ KEY_CANDIDATES: tuple[tuple[Color, str], ...] = (
     ((255, 255, 0), "yellow"),
 )
 KEY_TOLERANCE = 110
+MEASURED_KEY_TOLERANCE = 40
 ADAPTIVE_COLORS = 16
 MIN_PALETTE_COLORS = 2
 PALETTE_SIZE = 256
@@ -121,23 +122,28 @@ def _vote_blocks(labels: list[int], size: tuple[int, int], factor: int) -> list[
     return winners
 
 
-def to_sprite_pixels(
+def to_sprite_pixels(  # pylint: disable=too-many-arguments  # the key tolerance is a keyword-only refinement of the key
     result: Image.Image,
     size: tuple[int, int],
     factor: int,
     palette: Sequence[Color] | None = None,
     key: Color | None = None,
+    *,
+    tolerance: int = KEY_TOLERANCE,
 ) -> Image.Image:
     """Reduce each factor x factor block to its most frequent palette color.
 
-    Pixels close to the key color vote for transparency.
+    Pixels within tolerance of the key color vote for transparency. The wide
+    default covers a requested key the model only approximates; a key measured
+    on the image itself needs MEASURED_KEY_TOLERANCE, or a subject drawn in a
+    neighbouring hue (an orange cat on yellow) is keyed out with it.
     """
     cropped = result.convert("RGB").crop((0, 0, size[0] * factor, size[1] * factor))
     labels, colors = _quantize(cropped, palette)
     if key is not None:
-        tolerance = KEY_TOLERANCE**2
+        limit = tolerance**2
         labels = [
-            TRANSPARENT if _distance2((p[0], p[1], p[2]), key) < tolerance else label
+            TRANSPARENT if _distance2((p[0], p[1], p[2]), key) < limit else label
             for p, label in zip(pixel_tuples(cropped), labels)
         ]
     small = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -148,23 +154,27 @@ def to_sprite_pixels(
     return small
 
 
-def foreground_mask(image: Image.Image, key: Color) -> Image.Image:
+def foreground_mask(
+    image: Image.Image, key: Color, tolerance: int = KEY_TOLERANCE
+) -> Image.Image:
     """L mask, 255 on the pixels far from the key color, 0 on the background."""
     rgb = image.convert("RGB")
-    tolerance = KEY_TOLERANCE**2
+    limit = tolerance**2
     mask = Image.new("L", rgb.size, 0)
     mask.putdata(
         [
-            255 if _distance2((p[0], p[1], p[2]), key) >= tolerance else 0
+            255 if _distance2((p[0], p[1], p[2]), key) >= limit else 0
             for p in pixel_tuples(rgb)
         ]
     )
     return mask
 
 
-def foreground_box(image: Image.Image, key: Color) -> tuple[int, int, int, int] | None:
+def foreground_box(
+    image: Image.Image, key: Color, tolerance: int = KEY_TOLERANCE
+) -> tuple[int, int, int, int] | None:
     """Bounding box of the pixels far from the key color, None when there is none."""
-    return foreground_mask(image, key).getbbox()
+    return foreground_mask(image, key, tolerance).getbbox()
 
 
 def fit_to_sprite(
@@ -175,16 +185,20 @@ def fit_to_sprite(
 ) -> Image.Image:
     """Reduce the subject drawn on a plain background to a sprite it fills.
 
-    The background is the border color. The crop around the subject keeps
-    margin transparent pixels on its longest side and an integer factor, so
-    that each sprite pixel is voted by a whole block.
+    The background is the border color, keyed with the measured tolerance.
+    The crop around the subject keeps margin transparent pixels on its longest
+    side and an integer factor, so that each sprite pixel is voted by a whole
+    block.
     """
     rgb = image.convert("RGB")
     key = border_color(rgb)
-    left, top, right, bottom = foreground_box(rgb, key) or (0, 0, *rgb.size)
+    box = foreground_box(rgb, key, MEASURED_KEY_TOLERANCE)
+    left, top, right, bottom = box or (0, 0, *rgb.size)
     inner = (max(1, size[0] - 2 * margin), max(1, size[1] - 2 * margin))
     factor = max(1, -(-(right - left) // inner[0]), -(-(bottom - top) // inner[1]))
     crop = (factor * size[0], factor * size[1])
     canvas = Image.new("RGB", crop, key)
     canvas.paste(rgb, ((crop[0] - left - right) // 2, (crop[1] - top - bottom) // 2))
-    return to_sprite_pixels(canvas, size, factor, palette, key)
+    return to_sprite_pixels(
+        canvas, size, factor, palette, key, tolerance=MEASURED_KEY_TOLERANCE
+    )

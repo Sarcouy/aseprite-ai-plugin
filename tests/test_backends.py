@@ -8,6 +8,7 @@ from PIL import Image
 from ai_inpaint_bridge.backends import (
     LATENT_MULTIPLE,
     changed_fraction,
+    diffusion_generate,
     diffusion_inpaint,
     grow_mask,
     scale_factor,
@@ -19,6 +20,7 @@ from ai_inpaint_bridge.pixelize import pick_key_color
 BLUE = (10, 20, 200, 255)
 GREEN = (0, 255, 0)
 MAGENTA = (255, 0, 255)
+PINK = (235, 60, 200)
 SETTINGS = InpaintSettings(prompt="a sword", seed=1)
 
 
@@ -182,3 +184,37 @@ def test_transparent_pixels_count_as_unchanged_whatever_their_rgb() -> None:
     mask = Image.new("L", (2, 1), 255)
 
     assert changed_fraction(original, result, mask) == 0.0
+
+
+def test_approximate_key_over_a_transparent_area_is_keyed_back() -> None:
+    """Klein's pink for a requested magenta still turns back into transparency."""
+    source = Image.new("RGBA", (10, 6), (0, 0, 0, 0))
+    mask = Image.new("L", (10, 6), 255)
+
+    [result] = diffusion_inpaint(source, mask, SETTINGS, SolidGenerator(PINK))
+
+    assert result.getchannel("A").getbbox() is None
+
+
+class OrangeOnGolden:  # pylint: disable=too-few-public-methods  # test double of the single-method TextGenerator protocol
+    """An orange square on the golden yellow klein draws for a yellow key."""
+
+    def generate_text(
+        self, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """batch_size images with the subject in their middle half."""
+        image = Image.new("RGB", (width, height), (254, 219, 61))
+        image.paste(
+            (255, 143, 58), (width // 4, height // 4, width * 3 // 4, height * 3 // 4)
+        )
+        return [image] * settings.batch_size
+
+
+def test_generated_subject_close_to_the_drawn_key_is_kept() -> None:
+    """The measured background is keyed out, not a subject of a neighbouring hue."""
+    palette = [(200, 10, 30), (55, 245, 225), (20, 40, 220)]
+
+    [sprite] = diffusion_generate((8, 8), SETTINGS, OrangeOnGolden(), palette)
+
+    assert sprite.getchannel("A").getbbox() == (2, 2, 6, 6)
+    assert sprite.getpixel((4, 4)) == (200, 10, 30, 255)

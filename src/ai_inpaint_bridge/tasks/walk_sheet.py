@@ -12,6 +12,7 @@ from ai_inpaint_bridge.backends import ReferenceGenerator, TextGenerator
 from ai_inpaint_bridge.comfyui import ComfyUIClient, InpaintSettings
 from ai_inpaint_bridge.klein import KLEIN_4B_BASE_WALK
 from ai_inpaint_bridge.pixelize import (
+    MEASURED_KEY_TOLERANCE,
     Color,
     border_color,
     foreground_mask,
@@ -227,7 +228,7 @@ def slice_sheet(
     """
     rgb = image.convert("RGB")
     key = border_color(rgb)
-    mask = foreground_mask(rgb, key)
+    mask = foreground_mask(rgb, key, MEASURED_KEY_TOLERANCE)
     rows = [
         place_row(row, [_sprite_box(mask, cell) for cell in row])
         for row in locate_cells(mask)
@@ -237,7 +238,14 @@ def slice_sheet(
     for row_index, row in enumerate(rows):
         for column in range(len(row.cells)):
             canvas = _cut(rgb, row, column, factor, key)
-            frame = to_sprite_pixels(canvas, (FRAME, FRAME), factor, palette, key)
+            frame = to_sprite_pixels(
+                canvas,
+                (FRAME, FRAME),
+                factor,
+                palette,
+                key,
+                tolerance=MEASURED_KEY_TOLERANCE,
+            )
             sheet.paste(frame, (column * FRAME, row_index * FRAME))
     return sheet
 

@@ -165,3 +165,55 @@ def test_characters_are_transparent_and_in_the_palette() -> None:
     pixels = pixel_tuples(sprites[0])
     assert pixels[0] == (0, 0, 0, 0)
     assert {pixel[:3] for pixel in pixels if pixel[3] > 0} == {PALETTE[0]}
+
+
+GOLDEN_KEY: Color = (254, 219, 61)
+ORANGE: Color = (255, 143, 58)
+OUTLINE: Color = (30, 20, 10)
+ROUNDTRIP_PALETTE: list[Color] = [(200, 10, 30), (55, 245, 225), (20, 40, 220)]
+
+
+def orange_cat_grid() -> Image.Image:
+    """Klein's yellow key drawn golden, an orange body 67 away from it, outlined."""
+    image = Image.new("RGB", (512, 512), GOLDEN_KEY)
+    image.paste(OUTLINE, (68, 63, 186, 200))
+    image.paste(ORANGE, (72, 67, 182, 196))
+    return image
+
+
+class OrangeCat:  # pylint: disable=too-few-public-methods  # stands for the one-method text generator
+    """Draws the same orange cat grid for every variant."""
+
+    def generate_text(
+        self, settings: InpaintSettings, width: int, height: int
+    ) -> list[Image.Image]:
+        """One grid per variant."""
+        del width, height
+        return [orange_cat_grid()] * settings.batch_size
+
+
+def test_subject_close_to_the_drawn_key_is_kept() -> None:
+    """An orange body on a golden yellow background is not keyed out."""
+    settings = InpaintSettings(prompt="an orange cat", seed=1, batch_size=2)
+
+    sprites = generate_characters((8, 8), settings, OrangeCat(), ROUNDTRIP_PALETTE)
+
+    for sprite in sprites:
+        alpha = sprite.getchannel("A")
+        assert alpha.getbbox() is not None
+        assert sprite.getpixel((4, 4)) == (*ROUNDTRIP_PALETTE[0], 255)
+
+
+def test_noisy_background_stays_transparent() -> None:
+    """A background varying by a few units around its median is keyed out."""
+    image = orange_cat_grid()
+    for x in range(0, 512, 2):
+        for y in range(0, 512, 3):
+            if image.getpixel((x, y)) == GOLDEN_KEY:
+                image.putpixel((x, y), (248, 227, 53))
+
+    sprite = fit_to_sprite(best_cell(image), (8, 8), ROUNDTRIP_PALETTE)
+
+    alpha = sprite.getchannel("A")
+    assert alpha.getbbox() == (1, 1, 7, 7)
+    assert alpha.getpixel((0, 0)) == 0

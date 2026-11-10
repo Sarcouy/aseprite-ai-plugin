@@ -8,6 +8,7 @@ from PIL import Image, ImageFilter, ImageOps
 
 from ai_inpaint_bridge.comfyui import InpaintSettings
 from ai_inpaint_bridge.pixelize import (
+    MEASURED_KEY_TOLERANCE,
     Color,
     band_values,
     border_color,
@@ -227,6 +228,7 @@ def diffusion_generate(
             factor,
             palette,
             border_color(result) if transparent else None,
+            tolerance=MEASURED_KEY_TOLERANCE,
         )
         for result in results
     ]

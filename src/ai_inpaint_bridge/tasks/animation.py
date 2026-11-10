@@ -135,6 +135,18 @@ def _reduce(
     return sprite_on_grid(image, grid, key, shift, colors)
 
 
+def _pose_settings(
+    settings: InpaintSettings, pose: Pose, key_name: str
+) -> InpaintSettings:
+    return replace(
+        settings,
+        prompt=pose_prompt(pose, settings.prompt),
+        denoise=GUIDE_STRENGTH,
+        background=key_name,
+        background_hint=True,
+    )
+
+
 def draw_poses(
     sprite: Image.Image,
     animation: Animation,
@@ -158,14 +170,9 @@ def draw_poses(
     reference = grid.place(rgba, key)
     poses: list[list[Image.Image]] = []
     for pose, posed in zip(animation.poses, guides):
-        asked = replace(
-            settings,
-            prompt=pose_prompt(pose, settings.prompt),
-            denoise=GUIDE_STRENGTH,
-            background=key_name,
-            background_hint=True,
+        images = generator.generate_guided(
+            reference, grid.place(posed, key), _pose_settings(settings, pose, key_name)
         )
-        images = generator.generate_guided(reference, grid.place(posed, key), asked)
         if len(images) != settings.batch_size:
             raise ValueError(
                 f"expected {settings.batch_size} generated images, got {len(images)}"

@@ -260,3 +260,21 @@ def test_invert_backend_accepts_a_reference_without_description(
 
     assert main(argv) == 0
     assert (tmp_path / "out-1.png").is_file()
+
+
+GOLDEN_KEY: Color = (254, 219, 61)
+ORANGE: Color = (255, 143, 58)
+
+
+def test_bodies_close_to_the_drawn_key_are_kept() -> None:
+    """Orange bodies on the golden yellow klein draws for a yellow key stay opaque."""
+    image = Image.new("RGB", (512, 512), GOLDEN_KEY)
+    for row in range(GRID):
+        for column in range(GRID):
+            image.paste(ORANGE, body(row, column))
+
+    sheet = slice_sheet(image, [(200, 10, 30), (55, 245, 225), (20, 40, 220)])
+
+    for row in range(GRID):
+        for column in range(GRID):
+            assert frame_box(sheet, row, column) == (11, 11, 21, 31)

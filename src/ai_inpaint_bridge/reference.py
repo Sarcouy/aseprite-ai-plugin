@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageChops
 
-from ai_inpaint_bridge.pixelize import Color, foreground_mask, to_sprite_pixels
+from ai_inpaint_bridge.pixelize import (
+    MEASURED_KEY_TOLERANCE,
+    Color,
+    foreground_mask,
+    to_sprite_pixels,
+)
 
 GENERATION_SIZE = 512
 STEPS_PER_PIXEL = 3
@@ -92,7 +97,7 @@ def registration(
     pixels, the smallest shift winning ties.
     """
     step = max(1, grid.factor // STEPS_PER_PIXEL)
-    drawn = _coarse(foreground_mask(image, key), step)
+    drawn = _coarse(foreground_mask(image, key, MEASURED_KEY_TOLERANCE), step)
     wanted = _coarse(grid.mask(sprite), step)
     reach_x = SEARCH_PIXELS[0] * STEPS_PER_PIXEL
     reach_y = SEARCH_PIXELS[1] * STEPS_PER_PIXEL
@@ -124,4 +129,6 @@ def sprite_on_grid(
     canvas.paste(
         image.convert("RGB"), (shift[0] - grid.offset[0], shift[1] - grid.offset[1])
     )
-    return to_sprite_pixels(canvas, grid.size, grid.factor, palette, key)
+    return to_sprite_pixels(
+        canvas, grid.size, grid.factor, palette, key, tolerance=MEASURED_KEY_TOLERANCE
+    )

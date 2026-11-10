@@ -11,6 +11,7 @@ from ai_inpaint_bridge.backends import TextGenerator
 from ai_inpaint_bridge.comfyui import ComfyUIClient, InpaintSettings
 from ai_inpaint_bridge.klein import KLEIN_4B
 from ai_inpaint_bridge.pixelize import (
+    MEASURED_KEY_TOLERANCE,
     Color,
     border_color,
     fit_to_sprite,
@@ -45,7 +46,7 @@ def grid_cells(image: Image.Image) -> list[Image.Image]:
 
 
 def _inside_area(cell: Image.Image) -> int:
-    box = foreground_box(cell, border_color(cell))
+    box = foreground_box(cell, border_color(cell), MEASURED_KEY_TOLERANCE)
     if box is None:
         return 0
     left, top, right, bottom = box
